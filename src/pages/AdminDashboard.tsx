@@ -164,7 +164,16 @@ const AdminDashboard = () => {
         body: JSON.stringify({ agentId: user?.id }),
       });
       const data = await res.json();
-      console.log('[WA-Admin] /api/session/start response:', JSON.stringify({ status: data.status, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
+      console.log('[WA-Admin] /api/session/start response (HTTP', res.status, '):', JSON.stringify({ status: data.status, error: data.error, message: data.message, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
+      if (!res.ok || data.error) {
+        const msg = data.message || `Backend error (HTTP ${res.status})`;
+        console.error('[WA-Admin] /api/session/start returned error:', msg);
+        toast.error(`WhatsApp backend error: ${msg}`);
+        setConnectingWA(false);
+        setPreparingQR(false);
+        setDebugStatus(`error: ${msg}`);
+        return;
+      }
       if (data.status === 'already_connected') {
         setConnectingWA(false);
         setDebugStatus('already_connected');
@@ -178,9 +187,9 @@ const AdminDashboard = () => {
         setQrCode(data.qrCode);
         setDebugStatus('qr_from_start');
       } else {
-        console.log('[WA-Admin] No qrCode in /start response — entering polling mode');
+        console.log('[WA-Admin] status=pending, qrCode=null in /start response — entering polling mode');
         setPreparingQR(true);
-        setDebugStatus('polling_waiting_for_qr');
+        setDebugStatus('pending_no_qr_yet');
       }
       pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
     } catch (err) {
@@ -328,7 +337,7 @@ const AdminDashboard = () => {
               <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
                 <div className="flex flex-col items-center gap-2">
                   <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground text-center px-4">Preparing QR code...</p>
+                  <p className="text-sm text-muted-foreground text-center px-4">Session initialising — QR code will appear in a few seconds</p>
                 </div>
               </div>
             </>
