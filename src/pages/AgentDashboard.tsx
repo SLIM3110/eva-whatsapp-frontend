@@ -23,6 +23,9 @@ const AgentDashboard = () => {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [preparingQR, setPreparingQR] = useState(false);
+  const [debugStatus, setDebugStatus] = useState<string>('idle');
+  const [debugPollCount, setDebugPollCount] = useState(0);
+  const [debugLastPoll, setDebugLastPoll] = useState<string | null>(null);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ name: '', body: '' });
   const [editTemplate, setEditTemplate] = useState<any>(null);
@@ -65,21 +68,29 @@ const AgentDashboard = () => {
     setConnecting(true);
     setQrCode(null);
     setPreparingQR(false);
+    setDebugPollCount(0);
+    setDebugLastPoll(null);
+    setDebugStatus('starting');
+    console.log('[WA] requestQR called, agentId:', user?.id);
     try {
       const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
       if (!settings?.whatsapp_backend_url) {
         toast.error('WhatsApp backend not configured');
         setConnecting(false);
+        setDebugStatus('error: no backend url');
         return;
       }
+      console.log('[WA] POST /api/session/start →', settings.whatsapp_backend_url);
       const res = await fetch(`${settings.whatsapp_backend_url}/api/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
         body: JSON.stringify({ agentId: user?.id }),
       });
       const data = await res.json();
+      console.log('[WA] /api/session/start response:', JSON.stringify({ status: data.status, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
       if (data.status === 'already_connected') {
         setConnecting(false);
+        setDebugStatus('already_connected');
         await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
         await refreshProfile();
         toast.success('WhatsApp already connected!');
@@ -87,51 +98,74 @@ const AgentDashboard = () => {
       }
       // Start polling regardless of whether qrCode is in the initial response
       if (data.qrCode) {
+        console.log('[WA] qrCode present in /start response, setting directly. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
         setQrCode(data.qrCode);
+        setDebugStatus('qr_from_start');
       } else {
+        console.log('[WA] No qrCode in /start response — entering polling mode');
         setPreparingQR(true);
+        setDebugStatus('polling_waiting_for_qr');
       }
       pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
-    } catch {
+    } catch (err) {
+      console.error('[WA] /api/session/start error:', err);
       toast.error('Failed to connect to WhatsApp backend');
       setConnecting(false);
       setPreparingQR(false);
+      setDebugStatus('error: start failed');
     }
   };
 
   const pollStatus = (url: string, key: string) => {
     const startTime = Date.now();
     const TIMEOUT_MS = 60_000;
+    let pollCount = 0;
     const interval = setInterval(async () => {
+      pollCount += 1;
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const ts = new Date().toLocaleTimeString();
+      console.log(`[WA] poll #${pollCount} (${elapsed}s elapsed)`);
       try {
         const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
           headers: { 'x-api-key': key },
         });
         const data = await res.json();
+        console.log(`[WA] poll #${pollCount} response:`, JSON.stringify({ status: data.status, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
+        setDebugPollCount(pollCount);
+        setDebugLastPoll(ts);
         if (data.status === 'connected') {
+          console.log('[WA] status=connected → stopping poll, updating Supabase');
           clearInterval(interval);
           setQrCode(null);
           setPreparingQR(false);
           setConnecting(false);
+          setDebugStatus('connected');
           await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
           await refreshProfile();
           toast.success('WhatsApp connected!');
         } else if (data.qrCode) {
+          console.log('[WA] qrCode received in poll, setting img src. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
           setQrCode(data.qrCode);
           setPreparingQR(false);
+          setDebugStatus('qr_received');
         } else if (Date.now() - startTime >= TIMEOUT_MS) {
+          console.warn('[WA] 60s timeout reached with no QR code');
           clearInterval(interval);
           setQrCode(null);
           setPreparingQR(false);
           setConnecting(false);
+          setDebugStatus('error: timeout');
           toast.error('Could not generate QR code. Please try again.');
+        } else {
+          setDebugStatus(`polling (${elapsed}s)`);
         }
-        // else: status is pending with no qrCode — keep polling, show "Preparing QR code..."
-      } catch {
+      } catch (err) {
+        console.error(`[WA] poll #${pollCount} error:`, err);
         clearInterval(interval);
         setQrCode(null);
         setPreparingQR(false);
         setConnecting(false);
+        setDebugStatus('error: poll failed');
       }
     }, 3000);
   };
@@ -301,6 +335,17 @@ const AgentDashboard = () => {
                 Request QR Code
               </Button>
             </>
+          )}
+          {/* DEBUG PANEL — remove after diagnosis */}
+          {debugStatus !== 'idle' && (
+            <div className="w-full mt-2 rounded border border-yellow-400 bg-yellow-50 p-3 text-xs font-mono text-yellow-900 space-y-1">
+              <p className="font-bold text-yellow-700">🔍 WA Debug Panel</p>
+              <p><span className="font-semibold">status:</span> {debugStatus}</p>
+              <p><span className="font-semibold">qrCode state:</span> {qrCode ? `set (${qrCode.length} chars, prefix: ${qrCode.slice(0, 30)}…)` : 'null'}</p>
+              <p><span className="font-semibold">preparingQR:</span> {String(preparingQR)}</p>
+              <p><span className="font-semibold">polls fired:</span> {debugPollCount}</p>
+              <p><span className="font-semibold">last poll at:</span> {debugLastPoll ?? '—'}</p>
+            </div>
           )}
         </CardContent>
       </Card>
