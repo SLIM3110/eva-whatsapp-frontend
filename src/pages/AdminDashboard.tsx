@@ -24,6 +24,7 @@ const AdminDashboard = () => {
   const [newBlacklistNumber, setNewBlacklistNumber] = useState('');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connectingWA, setConnectingWA] = useState(false);
+  const [preparingQR, setPreparingQR] = useState(false);
   const [sendingPaused, setSendingPaused] = useState(false);
   const [togglingPause, setTogglingPause] = useState(false);
 
@@ -139,6 +140,8 @@ const AdminDashboard = () => {
 
   const requestQR = async () => {
     setConnectingWA(true);
+    setQrCode(null);
+    setPreparingQR(false);
     try {
       const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
       if (!settings?.whatsapp_backend_url) {
@@ -157,17 +160,24 @@ const AdminDashboard = () => {
         await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
         await refreshProfile();
         toast.success('WhatsApp already connected!');
-      } else if (data.qrCode) {
-        setQrCode(data.qrCode);
-        pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
+        return;
       }
+      if (data.qrCode) {
+        setQrCode(data.qrCode);
+      } else {
+        setPreparingQR(true);
+      }
+      pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
     } catch {
       toast.error('Failed to connect to WhatsApp backend');
       setConnectingWA(false);
+      setPreparingQR(false);
     }
   };
 
   const pollStatus = (url: string, key: string) => {
+    const startTime = Date.now();
+    const TIMEOUT_MS = 60_000;
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
@@ -177,18 +187,28 @@ const AdminDashboard = () => {
         if (data.status === 'connected') {
           clearInterval(interval);
           setQrCode(null);
+          setPreparingQR(false);
           setConnectingWA(false);
           await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
           await refreshProfile();
           toast.success('WhatsApp connected!');
         } else if (data.qrCode) {
           setQrCode(data.qrCode);
+          setPreparingQR(false);
+        } else if (Date.now() - startTime >= TIMEOUT_MS) {
+          clearInterval(interval);
+          setQrCode(null);
+          setPreparingQR(false);
+          setConnectingWA(false);
+          toast.error('Could not generate QR code. Please try again.');
         }
       } catch {
         clearInterval(interval);
+        setQrCode(null);
+        setPreparingQR(false);
         setConnectingWA(false);
       }
-    }, 5000);
+    }, 3000);
   };
 
   const disconnectWA = async () => {
@@ -266,6 +286,15 @@ const AdminDashboard = () => {
               <img src={qrCode} alt="WhatsApp QR Code" className="border rounded-lg" style={{ width: 256, height: 256 }} />
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="animate-spin w-4 h-4" /> Connecting — keep this page open
+              </div>
+            </>
+          ) : preparingQR ? (
+            <>
+              <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground text-center px-4">Preparing QR code...</p>
+                </div>
               </div>
             </>
           ) : (

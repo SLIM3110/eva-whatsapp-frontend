@@ -30,6 +30,7 @@ const UnitCollector = () => {
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connectingWhatsApp, setConnectingWhatsApp] = useState(false);
+  const [preparingQR, setPreparingQR] = useState(false);
   const [sendingPaused, setSendingPaused] = useState(false);
   const [togglingPause, setTogglingPause] = useState(false);
   const pollingRef = useRef<number | null>(null);
@@ -143,6 +144,8 @@ const UnitCollector = () => {
 
   const pollWhatsAppStatus = useCallback((url: string, key: string) => {
     clearPolling();
+    const startTime = Date.now();
+    const TIMEOUT_MS = 60_000;
     pollingRef.current = window.setInterval(async () => {
       try {
         const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
@@ -153,23 +156,39 @@ const UnitCollector = () => {
         if (data.status === 'connected') {
           clearPolling();
           setQrCode(null);
+          setPreparingQR(false);
           setConnectingWhatsApp(false);
           await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
           await refreshProfile();
           toast.success('WhatsApp connected');
+        } else if (data.qrCode) {
+          const imageSrc = data.qrCode.startsWith('data:image')
+            ? data.qrCode
+            : `data:image/png;base64,${data.qrCode}`;
+          setQrCode(imageSrc);
+          setPreparingQR(false);
+        } else if (Date.now() - startTime >= TIMEOUT_MS) {
+          clearPolling();
+          setQrCode(null);
+          setPreparingQR(false);
+          setConnectingWhatsApp(false);
+          toast.error('Could not generate QR code. Please try again.');
         }
       } catch {
         clearPolling();
+        setQrCode(null);
+        setPreparingQR(false);
         setConnectingWhatsApp(false);
         toast.error('Failed while checking WhatsApp status');
       }
-    }, 5000);
+    }, 3000);
   }, [clearPolling, refreshProfile, user?.id]);
 
   const requestQRCode = async () => {
     if (!user) return;
     setConnectingWhatsApp(true);
     setQrCode(null);
+    setPreparingQR(false);
 
     try {
       const { data: settings, error } = await supabase
@@ -192,18 +211,27 @@ const UnitCollector = () => {
       });
 
       const data = await response.json();
-      if (!response.ok || !data?.qrCode) {
-        throw new Error(data?.message || 'QR code was not returned');
+
+      if (data.status === 'already_connected') {
+        setConnectingWhatsApp(false);
+        await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
+        await refreshProfile();
+        toast.success('WhatsApp already connected!');
+        return;
       }
 
-      const imageSrc = data.qrCode.startsWith('data:image')
-        ? data.qrCode
-        : `data:image/png;base64,${data.qrCode}`;
-
-      setQrCode(imageSrc);
+      if (data.qrCode) {
+        const imageSrc = data.qrCode.startsWith('data:image')
+          ? data.qrCode
+          : `data:image/png;base64,${data.qrCode}`;
+        setQrCode(imageSrc);
+      } else {
+        setPreparingQR(true);
+      }
       pollWhatsAppStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
     } catch (err: any) {
       setConnectingWhatsApp(false);
+      setPreparingQR(false);
       toast.error(err.message || 'Failed to request QR code');
     }
   };
@@ -488,25 +516,30 @@ const UnitCollector = () => {
               </p>
               <Button variant="destructive" onClick={disconnectWhatsApp}>Disconnect</Button>
             </>
+          ) : qrCode ? (
+            <>
+              <img src={qrCode} alt="WhatsApp QR Code" className="rounded-lg border" style={{ width: 256, height: 256 }} />
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Connecting — keep this page open</span>
+              </div>
+            </>
+          ) : preparingQR ? (
+            <div className="flex items-center justify-center rounded-lg border-2 border-dashed bg-muted" style={{ width: 256, height: 256 }}>
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                <p className="px-4 text-center text-sm text-muted-foreground">Preparing QR code...</p>
+              </div>
+            </div>
           ) : (
             <>
-              {qrCode ? (
-                <img src={qrCode} alt="WhatsApp QR Code" className="rounded-lg border" style={{ width: 256, height: 256 }} />
-              ) : (
-                <div className="flex items-center justify-center rounded-lg border-2 border-dashed bg-muted" style={{ width: 256, height: 256 }}>
-                  <p className="px-4 text-center text-sm text-muted-foreground">Scan this code with your WhatsApp to connect</p>
-                </div>
-              )}
+              <div className="flex items-center justify-center rounded-lg border-2 border-dashed bg-muted" style={{ width: 256, height: 256 }}>
+                <p className="px-4 text-center text-sm text-muted-foreground">Scan this code with your WhatsApp to connect</p>
+              </div>
               <Button onClick={requestQRCode} disabled={connectingWhatsApp}>
                 {connectingWhatsApp ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Request QR Code
               </Button>
-              {connectingWhatsApp ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Connecting — keep this page open</span>
-                </div>
-              ) : null}
             </>
           )}
         </CardContent>
