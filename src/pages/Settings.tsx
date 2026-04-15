@@ -21,7 +21,7 @@ const SettingsPage = () => {
     const fetch = async () => {
       const { data } = await supabase.from('api_settings').select('*').eq('id', 1).single();
       if (data) {
-        setWhatsappUrl(data.whatsapp_backend_url || '');
+        setWhatsappUrl(data.whatsapp_backend_url || 'https://api.evaintelligencehub.online');
         setWhatsappKey(data.whatsapp_api_key || '');
         setGeminiKey(data.gemini_api_key || '');
       }

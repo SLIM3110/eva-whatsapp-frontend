@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,14 +10,111 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Progress } from '@/components/ui/progress';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { toUAETime } from '@/lib/uaeTime';
-import { Upload, Loader2, Eye, ArrowLeft, QrCode, Pause, Play } from 'lucide-react';
+import { Upload, Loader2, Eye, ArrowLeft, X, RefreshCw } from 'lucide-react';
+
+const PHONE_KEYWORDS = ['mobile', 'phone', 'number', 'tel', 'contact', 'whatsapp', 'cell', 'mob'];
+const PHONE_EXACT_NORMALIZED = ['mobile1','mobile2','mobile3','mobile_1','mobile_2','mobile_3','mobile1','mobile2','mobile3'];
+
+const isPhoneColumn = (header: string) => {
+  const h = header.toLowerCase().replace(/[\s_]/g, '');
+  if (PHONE_EXACT_NORMALIZED.includes(h)) return true;
+  return PHONE_KEYWORDS.some(kw => header.toLowerCase().includes(kw));
+};
+
+const cleanPhone = (raw: string): string | null => {
+  if (!raw) return null;
+  let num = String(raw).replace(/[\s\-\(\)\+]/g, '');
+  if (!/^\d+$/.test(num)) return null;
+  if (num.startsWith('0')) num = '971' + num.slice(1);
+  if (num.startsWith('5') && num.length === 9) num = '971' + num;
+  return num.length >= 10 ? num : null;
+};
+
+type ParsedRow = { owner_name: string; building_name: string; unit_number: string; phone: string };
+type ColumnMapping = { phoneColumns: string[]; nameColumn: string | null; buildingColumn: string | null };
+
+const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping: ColumnMapping }> => {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+
+  let rawHeaders: string[] = [];
+  let data: Record<string, string>[] = [];
+
+  if (ext === 'xlsx' || ext === 'xls') {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const jsonData = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+    if (jsonData.length === 0) throw new Error('Excel file is empty');
+    rawHeaders = Object.keys(jsonData[0]).map(h => String(h).trim());
+    data = jsonData.map(row =>
+      Object.fromEntries(rawHeaders.map(h => [h, String(row[h] ?? '').trim()]))
+    );
+  } else {
+    // CSV
+    const text = await file.text();
+    const result = Papa.parse<Record<string, string>>(text, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: h => h.trim(),
+    });
+    if (result.errors.length > 0) throw new Error(`CSV parse error: ${result.errors[0].message}`);
+    rawHeaders = result.meta.fields || [];
+    data = result.data;
+  }
+
+  const headers = rawHeaders.map(h => h.toLowerCase());
+
+  const phoneColIndexes = rawHeaders.map((h, i) => isPhoneColumn(h) ? i : -1).filter(i => i >= 0);
+  if (phoneColIndexes.length === 0) {
+    throw new Error(
+      'No phone number columns detected. Your file must have at least one column with mobile, phone, or number in the header.'
+    );
+  }
+
+  const nameColIdx = headers.findIndex(h => h.includes('name') || h.includes('owner'));
+  const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
+  const unitColIdx = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
+
+  const mapping: ColumnMapping = {
+    phoneColumns: phoneColIndexes.map(i => rawHeaders[i]),
+    nameColumn: nameColIdx >= 0 ? rawHeaders[nameColIdx] : null,
+    buildingColumn: buildingColIdx >= 0 ? rawHeaders[buildingColIdx] : null,
+  };
+
+  const contacts: ParsedRow[] = [];
+  for (const row of data) {
+    const vals = rawHeaders.map(h => (row[h] || '').trim());
+    const ownerName = nameColIdx >= 0 ? (vals[nameColIdx] || 'Unknown') : 'Unknown';
+    const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '') : '';
+    const unitNumber = unitColIdx >= 0 ? (vals[unitColIdx] || '') : '';
+
+    for (const idx of phoneColIndexes) {
+      const cleaned = cleanPhone(vals[idx] || '');
+      if (cleaned) {
+        contacts.push({ owner_name: ownerName, building_name: buildingName, unit_number: unitNumber, phone: cleaned });
+      }
+    }
+  }
+
+  return { rows: contacts, mapping };
+};
+
+const getBatchStatus = (b: any): { label: string; variant: string } => {
+  if (b.cancelledCount > 0 && b.pending_count === 0 && b.sent_count === 0) return { label: 'Cancelled', variant: 'secondary' };
+  if (b.sent_count >= b.total_contacts && b.total_contacts > 0) return { label: 'Completed', variant: 'default' };
+  if (b.pending_count > 0) return { label: 'Active', variant: 'default' };
+  return { label: 'Completed', variant: 'default' };
+};
 
 const UnitCollector = () => {
-  const { user, profile, refreshProfile } = useAuth();
+  const { user, profile } = useAuth();
   const [batchName, setBatchName] = useState('');
-  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileMapping, setFileMapping] = useState<ColumnMapping | null>(null);
+  const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [agents, setAgents] = useState<any[]>([]);
@@ -28,43 +126,57 @@ const UnitCollector = () => {
   const [filterAgent, setFilterAgent] = useState('');
   const [loading, setLoading] = useState(true);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
-  const [qrCode, setQrCode] = useState<string | null>(null);
-  const [connectingWhatsApp, setConnectingWhatsApp] = useState(false);
-  const [preparingQR, setPreparingQR] = useState(false);
-  const [sendingPaused, setSendingPaused] = useState(false);
-  const [togglingPause, setTogglingPause] = useState(false);
-  const pollingRef = useRef<number | null>(null);
+  const [cancelBatchId, setCancelBatchId] = useState<string | null>(null);
+  const [cancellingBatch, setCancellingBatch] = useState(false);
+  const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [loadingContacts, setLoadingContacts] = useState(false);
 
   const isAdmin = profile?.role === 'super_admin' || profile?.role === 'admin';
-  const isConnected = profile?.whatsapp_session_status === 'connected';
-
-  const clearPolling = useCallback(() => {
-    if (pollingRef.current) {
-      window.clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  }, []);
 
   const fetchData = useCallback(async () => {
+    if (!user) return;
     const promises: any[] = [
       supabase.from('message_templates').select('*'),
       isAdmin
         ? supabase.from('batches').select('*').order('upload_date', { ascending: false })
-        : supabase.from('batches').select('*').eq('uploaded_by', user!.id).order('upload_date', { ascending: false }),
+        : supabase.from('batches').select('*').eq('uploaded_by', user.id).order('upload_date', { ascending: false }),
       supabase.from('profiles').select('id, first_name, last_name, role'),
-      supabase.from('profiles').select('sending_paused').eq('id', user!.id).single(),
     ];
 
-    const [templatesRes, batchesRes, allProfilesRes, pauseRes] = await Promise.all(promises);
+    const [templatesRes, batchesRes, allProfilesRes] = await Promise.all(promises);
     setTemplates(templatesRes.data || []);
-    setSendingPaused(pauseRes.data?.sending_paused ?? false);
     const allProfiles = allProfilesRes.data || [];
     setAgents(allProfiles.filter((p: any) => p.role === 'agent'));
     const profileMap = Object.fromEntries(allProfiles.map((p: any) => [p.id, p]));
-    setBatches((batchesRes.data || []).map((b: any) => ({
+
+    const rawBatches = batchesRes.data || [];
+
+    // Fetch failed + cancelled counts per batch
+    const batchIds = rawBatches.map((b: any) => b.id);
+    let failedCounts: Record<string, number> = {};
+    let cancelledCounts: Record<string, number> = {};
+
+    if (batchIds.length > 0) {
+      const [failedRes, cancelledRes] = await Promise.all([
+        supabase.from('owner_contacts').select('uploaded_batch_id').in('uploaded_batch_id', batchIds).eq('message_status', 'failed'),
+        supabase.from('owner_contacts').select('uploaded_batch_id').in('uploaded_batch_id', batchIds).eq('message_status', 'cancelled'),
+      ]);
+      (failedRes.data || []).forEach((r: any) => {
+        failedCounts[r.uploaded_batch_id] = (failedCounts[r.uploaded_batch_id] || 0) + 1;
+      });
+      (cancelledRes.data || []).forEach((r: any) => {
+        cancelledCounts[r.uploaded_batch_id] = (cancelledCounts[r.uploaded_batch_id] || 0) + 1;
+      });
+    }
+
+    setBatches(rawBatches.map((b: any) => ({
       ...b,
       uploader: profileMap[b.uploaded_by] || null,
+      failedCount: failedCounts[b.id] || 0,
+      cancelledCount: cancelledCounts[b.id] || 0,
     })));
+
     const defaultTpl = templatesRes.data?.find((t: any) => t.is_default);
     if (defaultTpl) setSelectedTemplate(defaultTpl.id);
     setLoading(false);
@@ -72,69 +184,28 @@ const UnitCollector = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  useEffect(() => () => clearPolling(), [clearPolling]);
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] || null;
+    setFile(f);
+    setFileMapping(null);
+    setFileMappingPreview(false);
+    setParsedRows(null);
+    setParseError(null);
 
-  const PHONE_KEYWORDS = ['mobile', 'phone', 'number', 'tel', 'contact', 'whatsapp', 'cell', 'mob'];
-  const PHONE_EXACT = ['mobile1','mobile2','mobile3','mobile_1','mobile_2','mobile_3','mobile 1','mobile 2','mobile 3'];
+    if (!f) return;
 
-  const isPhoneColumn = (header: string) => {
-    const h = header.toLowerCase().replace(/[_\s]/g, '');
-    if (PHONE_EXACT.map(e => e.replace(/[_\s]/g, '')).includes(h)) return true;
-    return PHONE_KEYWORDS.some(kw => header.toLowerCase().includes(kw));
+    try {
+      const { rows, mapping } = await parseFileToRows(f);
+      setParsedRows(rows);
+      setFileMapping(mapping);
+      setFileMappingPreview(true);
+    } catch (err: any) {
+      setParseError(err.message);
+      toast.error(err.message);
+    }
   };
 
-  const cleanPhone = (raw: string): string | null => {
-    if (!raw) return null;
-    let num = raw.replace(/[\s\-\(\)\+]/g, '');
-    if (!/^\d+$/.test(num)) return null;
-    if (num.startsWith('0')) num = '971' + num.slice(1);
-    if (num.startsWith('5') && num.length === 9) num = '971' + num;
-    return num.length >= 10 ? num : null;
-  };
-
-  const parseCSV = (text: string) => {
-    const result = Papa.parse<Record<string, string>>(text, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: h => h.trim(),
-    });
-
-    if (result.errors.length > 0) {
-      throw new Error(`CSV parse error: ${result.errors[0].message}`);
-    }
-
-    const rawHeaders = result.meta.fields || [];
-    const headers = rawHeaders.map(h => h.toLowerCase());
-
-    const phoneColIndexes = headers.map((h, i) => isPhoneColumn(h) ? i : -1).filter(i => i >= 0);
-    if (phoneColIndexes.length === 0) {
-      throw new Error('No phone number columns found. Your CSV must have at least one column with mobile, phone, or number in the header name.');
-    }
-
-    const nameColIdx = headers.findIndex(h => h.includes('name') || h.includes('owner'));
-    const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
-    const unitColIdx = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
-
-    const contacts: { owner_name: string; building_name: string; unit_number: string; phone: string }[] = [];
-
-    for (const row of result.data) {
-      const vals = rawHeaders.map(h => (row[h] || '').trim());
-      const ownerName = nameColIdx >= 0 ? (vals[nameColIdx] || 'Unknown') : 'Unknown';
-      const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '') : '';
-      const unitNumber = unitColIdx >= 0 ? (vals[unitColIdx] || '') : '';
-
-      for (const idx of phoneColIndexes) {
-        const cleaned = cleanPhone(vals[idx] || '');
-        if (cleaned) {
-          contacts.push({ owner_name: ownerName, building_name: buildingName, unit_number: unitNumber, phone: cleaned });
-        }
-      }
-    }
-
-    return contacts;
-  };
-
-  const substituteTemplate = (template: string, row: any, agentName: string) => {
+  const substituteTemplate = (template: string, row: ParsedRow, agentName: string) => {
     return template
       .replace(/\{\{owner_name\}\}/g, row.owner_name || '')
       .replace(/\{\{building_name\}\}/g, row.building_name || '')
@@ -142,167 +213,24 @@ const UnitCollector = () => {
       .replace(/\{\{agent_first_name\}\}/g, agentName);
   };
 
-  const pollWhatsAppStatus = useCallback((url: string, key: string) => {
-    clearPolling();
-    const startTime = Date.now();
-    const TIMEOUT_MS = 60_000;
-    pollingRef.current = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
-          headers: { 'x-api-key': key },
-        });
-        const data = await res.json();
-
-        if (data.status === 'connected') {
-          clearPolling();
-          setQrCode(null);
-          setPreparingQR(false);
-          setConnectingWhatsApp(false);
-          await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
-          await refreshProfile();
-          toast.success('WhatsApp connected');
-        } else if (data.qrCode) {
-          const imageSrc = data.qrCode.startsWith('data:image')
-            ? data.qrCode
-            : `data:image/png;base64,${data.qrCode}`;
-          setQrCode(imageSrc);
-          setPreparingQR(false);
-        } else if (Date.now() - startTime >= TIMEOUT_MS) {
-          clearPolling();
-          setQrCode(null);
-          setPreparingQR(false);
-          setConnectingWhatsApp(false);
-          toast.error('Could not generate QR code. Please try again.');
-        }
-      } catch {
-        clearPolling();
-        setQrCode(null);
-        setPreparingQR(false);
-        setConnectingWhatsApp(false);
-        toast.error('Failed while checking WhatsApp status');
-      }
-    }, 3000);
-  }, [clearPolling, refreshProfile, user?.id]);
-
-  const requestQRCode = async () => {
-    if (!user) return;
-    setConnectingWhatsApp(true);
-    setQrCode(null);
-    setPreparingQR(false);
-
-    try {
-      const { data: settings, error } = await supabase
-        .from('api_settings')
-        .select('whatsapp_backend_url, whatsapp_api_key')
-        .eq('id', 1)
-        .single();
-
-      if (error || !settings?.whatsapp_backend_url) {
-        throw new Error('WhatsApp backend not configured');
-      }
-
-      const response = await fetch(`${settings.whatsapp_backend_url}/api/session/start`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': settings.whatsapp_api_key || '',
-        },
-        body: JSON.stringify({ agentId: user.id }),
-      });
-
-      const data = await response.json();
-
-      if (data.status === 'already_connected') {
-        setConnectingWhatsApp(false);
-        await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
-        await refreshProfile();
-        toast.success('WhatsApp already connected!');
-        return;
-      }
-
-      if (data.qrCode) {
-        const imageSrc = data.qrCode.startsWith('data:image')
-          ? data.qrCode
-          : `data:image/png;base64,${data.qrCode}`;
-        setQrCode(imageSrc);
-      } else {
-        setPreparingQR(true);
-      }
-      pollWhatsAppStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
-    } catch (err: any) {
-      setConnectingWhatsApp(false);
-      setPreparingQR(false);
-      toast.error(err.message || 'Failed to request QR code');
-    }
-  };
-
-  const disconnectWhatsApp = async () => {
-    if (!user) return;
-
-    try {
-      const { data: settings, error } = await supabase
-        .from('api_settings')
-        .select('whatsapp_backend_url, whatsapp_api_key')
-        .eq('id', 1)
-        .single();
-
-      if (error || !settings?.whatsapp_backend_url) {
-        throw new Error('WhatsApp backend not configured');
-      }
-
-      await fetch(`${settings.whatsapp_backend_url}/api/session/disconnect`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': settings.whatsapp_api_key || '',
-        },
-        body: JSON.stringify({ agentId: user.id }),
-      });
-
-      clearPolling();
-      setQrCode(null);
-      setConnectingWhatsApp(false);
-      await supabase.from('profiles').update({ whatsapp_session_status: 'disconnected' }).eq('id', user.id);
-      await refreshProfile();
-      toast.success('WhatsApp disconnected');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to disconnect WhatsApp');
-    }
-  };
-
-  const togglePause = async (pause: boolean) => {
-    setTogglingPause(true);
-    try {
-      const { data: settings } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
-      if (settings?.whatsapp_backend_url) {
-        const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
-        await fetch(`${settings.whatsapp_backend_url}${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-          body: JSON.stringify({ agentId: user?.id }),
-        });
-      }
-      await supabase.from('profiles').update({ sending_paused: pause }).eq('id', user?.id);
-      setSendingPaused(pause);
-      toast.success(pause ? 'Sending paused' : 'Sending resumed');
-    } catch {
-      toast.error('Failed to update sending status');
-    }
-    setTogglingPause(false);
-  };
-
   const handleUpload = async () => {
-    if (!batchName || !csvFile || !selectedTemplate) {
+    if (!batchName || !file || !selectedTemplate) {
       toast.error('Please fill all required fields');
+      return;
+    }
+    if (parseError) {
+      toast.error('Fix file issues before uploading');
       return;
     }
 
     setUploading(true);
-
     try {
-      const text = await csvFile.text();
-      const rows = parseCSV(text);
-      if (rows.length === 0) { toast.error('CSV file is empty'); setUploading(false); return; }
+      let rows = parsedRows;
+      if (!rows) {
+        const { rows: r } = await parseFileToRows(file);
+        rows = r;
+      }
+      if (!rows || rows.length === 0) { toast.error('File is empty or has no valid phone numbers'); setUploading(false); return; }
 
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
@@ -318,11 +246,9 @@ const UnitCollector = () => {
       }).select().single();
       if (batchError) throw batchError;
 
-      const assignedAgentId = user!.id;
       const agentName = profile?.first_name || '';
-      const contactInserts: any[] = [];
 
-      // Generate up to 5 template variations upfront to avoid Gemini rate limits
+      // Generate template variations
       const templateVariations: string[] = [template.body];
       const numVariations = Math.min(5, rows.length);
       if (settings?.gemini_api_key && rows.length > 0) {
@@ -346,29 +272,26 @@ const UnitCollector = () => {
         }
       }
 
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const templateVariant = templateVariations[i % templateVariations.length];
-        const generated = substituteTemplate(templateVariant, row, agentName);
-
-        contactInserts.push({
-          uploaded_batch_id: batch.id,
-          owner_name: row.owner_name,
-          building_name: row.building_name || batchName,
-          unit_number: row.unit_number || '',
-          number_1: row.phone,
-          number_2: '',
-          assigned_agent: assignedAgentId,
-          generated_message: generated,
-        });
-      }
+      const contactInserts: any[] = rows.map((row, i) => ({
+        uploaded_batch_id: batch.id,
+        owner_name: row.owner_name,
+        building_name: row.building_name || batchName,
+        unit_number: row.unit_number || '',
+        number_1: row.phone,
+        number_2: '',
+        assigned_agent: user!.id,
+        generated_message: substituteTemplate(templateVariations[i % templateVariations.length], row, agentName),
+      }));
 
       const { error: insertError } = await supabase.from('owner_contacts').insert(contactInserts);
       if (insertError) throw insertError;
 
-      toast.success(`${contactInserts.length} contacts added, assigned to you`);
+      toast.success(`${contactInserts.length} contacts added`);
       setBatchName('');
-      setCsvFile(null);
+      setFile(null);
+      setFileMapping(null);
+      setFileMappingPreview(false);
+      setParsedRows(null);
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
@@ -378,6 +301,7 @@ const UnitCollector = () => {
 
   const viewContacts = async (batchId: string) => {
     setViewingBatch(batchId);
+    setLoadingContacts(true);
     const [contactsRes, profilesRes] = await Promise.all([
       supabase.from('owner_contacts').select('*').eq('uploaded_batch_id', batchId),
       supabase.from('profiles').select('id, first_name, last_name'),
@@ -387,6 +311,39 @@ const UnitCollector = () => {
       ...c,
       agent_profile: profileMap[c.assigned_agent] || null,
     })));
+    setLoadingContacts(false);
+  };
+
+  const cancelBatch = async (batchId: string) => {
+    setCancellingBatch(true);
+    try {
+      const { error } = await supabase
+        .from('owner_contacts')
+        .update({ message_status: 'cancelled' })
+        .eq('uploaded_batch_id', batchId)
+        .eq('message_status', 'pending');
+      if (error) throw error;
+      toast.success('Batch cancelled — all pending messages cancelled');
+      setCancelBatchId(null);
+      fetchData();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to cancel batch');
+    }
+    setCancellingBatch(false);
+  };
+
+  const cancelContact = async (id: string) => {
+    const { error } = await supabase.from('owner_contacts').update({ message_status: 'cancelled' }).eq('id', id);
+    if (error) { toast.error('Failed to cancel'); return; }
+    setContacts(prev => prev.map(c => c.id === id ? { ...c, message_status: 'cancelled' } : c));
+    toast.success('Contact cancelled');
+  };
+
+  const retryContact = async (id: string) => {
+    const { error } = await supabase.from('owner_contacts').update({ message_status: 'pending' }).eq('id', id);
+    if (error) { toast.error('Failed to retry'); return; }
+    setContacts(prev => prev.map(c => c.id === id ? { ...c, message_status: 'pending' } : c));
+    toast.success('Contact reset to pending');
   };
 
   const filteredContacts = contacts.filter(c => {
@@ -395,16 +352,26 @@ const UnitCollector = () => {
     return true;
   });
 
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'sent': return <Badge className="bg-green-600 text-white">Sent</Badge>;
+      case 'failed': return <Badge variant="destructive">Failed</Badge>;
+      case 'cancelled': return <Badge className="bg-gray-500 text-white">Cancelled</Badge>;
+      default: return <Badge variant="secondary">Pending</Badge>;
+    }
+  };
+
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
 
   if (viewingBatch) {
+    const batch = batches.find(b => b.id === viewingBatch);
     return (
       <div className="space-y-6">
         <Button variant="ghost" onClick={() => setViewingBatch(null)}><ArrowLeft className="w-4 h-4 mr-2" /> Back to Batches</Button>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
-            <CardTitle>Contact Details</CardTitle>
-            <div className="flex gap-2">
+            <CardTitle>Contacts — {batch?.batch_name}</CardTitle>
+            <div className="flex gap-2 flex-wrap">
               {isAdmin && (
                 <Select value={filterAgent} onValueChange={setFilterAgent}>
                   <SelectTrigger className="w-[150px]"><SelectValue placeholder="Filter agent" /></SelectTrigger>
@@ -421,36 +388,54 @@ const UnitCollector = () => {
                   <SelectItem value="pending">Pending</SelectItem>
                   <SelectItem value="sent">Sent</SelectItem>
                   <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Owner</TableHead><TableHead>Building</TableHead><TableHead>Number 1</TableHead><TableHead>Number 2</TableHead>
-                {isAdmin && <TableHead>Agent</TableHead>}
-                <TableHead>Message</TableHead><TableHead>Status</TableHead><TableHead>Sent At</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {filteredContacts.map(c => (
-                  <TableRow key={c.id}>
-                    <TableCell>{c.owner_name}</TableCell>
-                    <TableCell>{c.building_name}</TableCell>
-                    <TableCell>{c.number_1}</TableCell>
-                    <TableCell>{c.number_2 || ''}</TableCell>
-                    {isAdmin && <TableCell>{c.agent_profile ? `${c.agent_profile.first_name} ${c.agent_profile.last_name}` : ''}</TableCell>}
-                    <TableCell className="max-w-[200px]">
-                      <button onClick={() => setExpandedMsg(expandedMsg === c.id ? null : c.id)} className="text-left text-sm hover:text-primary">
-                        {expandedMsg === c.id ? c.generated_message : (c.generated_message?.slice(0, 60) + (c.generated_message?.length > 60 ? '...' : ''))}
-                      </button>
-                    </TableCell>
-                    <TableCell><Badge variant={c.message_status === 'sent' ? 'default' : 'secondary'}>{c.message_status}</Badge></TableCell>
-                    <TableCell>{c.sent_at ? toUAETime(c.sent_at) : ''}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            {loadingContacts ? (
+              <div className="flex justify-center py-10"><Loader2 className="animate-spin w-6 h-6 text-primary" /></div>
+            ) : (
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Owner</TableHead><TableHead>Building</TableHead><TableHead>Number</TableHead>
+                  {isAdmin && <TableHead>Agent</TableHead>}
+                  <TableHead>Message</TableHead><TableHead>Status</TableHead><TableHead>Sent At</TableHead><TableHead></TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {filteredContacts.map(c => (
+                    <TableRow key={c.id}>
+                      <TableCell>{c.owner_name}</TableCell>
+                      <TableCell>{c.building_name}</TableCell>
+                      <TableCell className="font-mono text-sm">{c.number_1}</TableCell>
+                      {isAdmin && <TableCell>{c.agent_profile ? `${c.agent_profile.first_name} ${c.agent_profile.last_name}` : ''}</TableCell>}
+                      <TableCell className="max-w-[200px]">
+                        <button onClick={() => setExpandedMsg(expandedMsg === c.id ? null : c.id)} className="text-left text-sm hover:text-primary">
+                          {expandedMsg === c.id ? c.generated_message : (c.generated_message?.slice(0, 60) + (c.generated_message?.length > 60 ? '...' : ''))}
+                        </button>
+                      </TableCell>
+                      <TableCell>{getStatusBadge(c.message_status)}</TableCell>
+                      <TableCell className="text-sm">{c.sent_at ? toUAETime(c.sent_at) : ''}</TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          {c.message_status === 'failed' && (
+                            <Button size="sm" variant="outline" onClick={() => retryContact(c.id)}>
+                              <RefreshCw className="w-3 h-3 mr-1" /> Retry
+                            </Button>
+                          )}
+                          {c.message_status === 'pending' && (
+                            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => cancelContact(c.id)}>
+                              <X className="w-3 h-3 mr-1" /> Cancel
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -459,6 +444,7 @@ const UnitCollector = () => {
 
   return (
     <div className="space-y-8">
+      {/* Upload Form */}
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Upload className="w-5 h-5" /> Upload New Batch</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -467,10 +453,36 @@ const UnitCollector = () => {
             <Input value={batchName} onChange={(e) => setBatchName(e.target.value)} placeholder="Enter batch name" className="mt-1" />
           </div>
           <div>
-            <label className="text-sm font-medium">CSV File</label>
-            <Input type="file" accept=".csv" onChange={(e) => setCsvFile(e.target.files?.[0] || null)} className="mt-1" />
-            <p className="text-xs text-muted-foreground mt-1">Your CSV must contain at least one phone number column. Column headers should include words like mobile, phone, or number. Multiple number columns (mobile 1, mobile 2, mobile 3) are supported — each number creates a separate contact. All other columns are optional.</p>
+            <label className="text-sm font-medium">File (CSV or Excel)</label>
+            <Input
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              onChange={handleFileChange}
+              className="mt-1"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Accepts .csv and .xlsx files. Must contain at least one column with mobile, phone, or number in the header.
+              Multiple phone columns (mobile 1, mobile 2, mobile 3) are supported.
+            </p>
           </div>
+
+          {/* Column mapping preview */}
+          {fileMapping && fileMappingPreview && !parseError && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm space-y-1">
+              <p className="font-semibold text-blue-800">Detected column mapping:</p>
+              <p className="text-blue-700">Phone columns: <span className="font-mono">{fileMapping.phoneColumns.join(', ')}</span></p>
+              <p className="text-blue-700">Name column: <span className="font-mono">{fileMapping.nameColumn || 'none detected'}</span></p>
+              <p className="text-blue-700">Building column: <span className="font-mono">{fileMapping.buildingColumn || 'none detected'}</span></p>
+              {parsedRows && <p className="text-blue-700">Valid contacts found: <span className="font-semibold">{parsedRows.length}</span></p>}
+            </div>
+          )}
+
+          {parseError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {parseError}
+            </div>
+          )}
+
           <div>
             <label className="text-sm font-medium">Template</label>
             <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
@@ -480,103 +492,105 @@ const UnitCollector = () => {
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={handleUpload} disabled={uploading} className="w-full sm:w-auto">
+          <Button onClick={handleUpload} disabled={uploading || !!parseError} className="w-full sm:w-auto">
             {uploading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
             Upload and Generate Messages
           </Button>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2"><QrCode className="w-5 h-5" /> WhatsApp Connection</CardTitle></CardHeader>
-        <CardContent className="flex flex-col items-center gap-4">
-          {isConnected ? (
-            <>
-              <Badge variant="default" className="bg-green-600 text-white text-base px-4 py-1">Connected</Badge>
-              <div className="flex items-center gap-2">
-                {sendingPaused ? (
-                  <><span className="w-3 h-3 rounded-full bg-yellow-500" /><span className="text-sm font-medium text-yellow-600">Sending paused</span></>
-                ) : (
-                  <><span className="w-3 h-3 rounded-full bg-green-500 animate-pulse" /><span className="text-sm font-medium text-green-600">Sending active</span></>
-                )}
-              </div>
-              <div className="flex gap-2">
-                {sendingPaused ? (
-                  <Button onClick={() => togglePause(false)} disabled={togglingPause} className="bg-green-600 hover:bg-green-700 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Play className="w-4 h-4 mr-1" />} Resume Sending
-                  </Button>
-                ) : (
-                  <Button onClick={() => togglePause(true)} disabled={togglingPause} className="bg-yellow-500 hover:bg-yellow-600 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Pause className="w-4 h-4 mr-1" />} Pause Sending
-                  </Button>
-                )}
-              </div>
-              <p className="text-sm text-muted-foreground text-center">
-                Your WhatsApp is active. Messages will send automatically between 9am and 7pm.
-              </p>
-              <Button variant="destructive" onClick={disconnectWhatsApp}>Disconnect</Button>
-            </>
-          ) : qrCode ? (
-            <>
-              <img src={qrCode} alt="WhatsApp QR Code" className="rounded-lg border" style={{ width: 256, height: 256 }} />
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Connecting — keep this page open</span>
-              </div>
-            </>
-          ) : preparingQR ? (
-            <div className="flex items-center justify-center rounded-lg border-2 border-dashed bg-muted" style={{ width: 256, height: 256 }}>
-              <div className="flex flex-col items-center gap-2">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                <p className="px-4 text-center text-sm text-muted-foreground">Preparing QR code...</p>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-center rounded-lg border-2 border-dashed bg-muted" style={{ width: 256, height: 256 }}>
-                <p className="px-4 text-center text-sm text-muted-foreground">Scan this code with your WhatsApp to connect</p>
-              </div>
-              <Button onClick={requestQRCode} disabled={connectingWhatsApp}>
-                {connectingWhatsApp ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Request QR Code
-              </Button>
-            </>
-          )}
-        </CardContent>
-      </Card>
-
+      {/* Active Batches */}
       <Card>
         <CardHeader><CardTitle>{isAdmin ? 'Active Batches' : 'Your Batches'}</CardTitle></CardHeader>
         <CardContent>
           {batches.length === 0 ? (
             <p className="text-muted-foreground text-sm">No batches uploaded yet</p>
           ) : (
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Batch Name</TableHead>{isAdmin && <TableHead>Uploaded By</TableHead>}<TableHead>Upload Date</TableHead><TableHead>Total</TableHead><TableHead>Sent</TableHead><TableHead>Pending</TableHead><TableHead>Progress</TableHead><TableHead></TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {batches.map(b => (
-                  <TableRow key={b.id}>
-                    <TableCell className="font-medium">{b.batch_name}</TableCell>
-                    {isAdmin && <TableCell>{b.uploader?.first_name} {b.uploader?.last_name}</TableCell>}
-                    <TableCell>{toUAETime(b.upload_date)}</TableCell>
-                    <TableCell>{b.total_contacts}</TableCell>
-                    <TableCell>{b.sent_count}</TableCell>
-                    <TableCell>{b.pending_count}</TableCell>
-                    <TableCell className="w-32">
-                      <Progress value={b.total_contacts > 0 ? (b.sent_count / b.total_contacts) * 100 : 0} />
-                    </TableCell>
-                    <TableCell>
-                      <Button variant="ghost" size="sm" onClick={() => viewContacts(b.id)}><Eye className="w-4 h-4 mr-1" /> View</Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Batch Name</TableHead>
+                  {isAdmin && <TableHead>Uploaded By</TableHead>}
+                  <TableHead>Date (UAE)</TableHead>
+                  <TableHead>Total</TableHead>
+                  <TableHead>Sent</TableHead>
+                  <TableHead>Pending</TableHead>
+                  <TableHead>Failed</TableHead>
+                  <TableHead>Cancelled</TableHead>
+                  <TableHead>Progress</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead></TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {batches.map(b => {
+                    const bStatus = getBatchStatus(b);
+                    const pct = b.total_contacts > 0 ? (b.sent_count / b.total_contacts) * 100 : 0;
+                    return (
+                      <TableRow key={b.id}>
+                        <TableCell className="font-medium">{b.batch_name}</TableCell>
+                        {isAdmin && <TableCell>{b.uploader?.first_name} {b.uploader?.last_name}</TableCell>}
+                        <TableCell className="text-sm">{toUAETime(b.upload_date)}</TableCell>
+                        <TableCell>{b.total_contacts}</TableCell>
+                        <TableCell className="text-green-600 font-medium">{b.sent_count}</TableCell>
+                        <TableCell>{b.pending_count}</TableCell>
+                        <TableCell className="text-destructive">{b.failedCount}</TableCell>
+                        <TableCell className="text-muted-foreground">{b.cancelledCount}</TableCell>
+                        <TableCell className="w-28">
+                          <div className="space-y-1">
+                            <Progress value={pct} className="h-2" />
+                            <p className="text-xs text-muted-foreground">{Math.round(pct)}%</p>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={
+                            bStatus.label === 'Active' ? 'bg-green-600 text-white' :
+                            bStatus.label === 'Cancelled' ? 'bg-gray-500 text-white' :
+                            'bg-blue-600 text-white'
+                          }>
+                            {bStatus.label}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1 flex-wrap">
+                            <Button variant="ghost" size="sm" onClick={() => viewContacts(b.id)}>
+                              <Eye className="w-4 h-4 mr-1" /> View
+                            </Button>
+                            {b.pending_count > 0 && (
+                              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelBatchId(b.id)}>
+                                <X className="w-4 h-4 mr-1" /> Cancel
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </CardContent>
       </Card>
+
+      {/* Cancel Batch Confirmation Modal */}
+      <Dialog open={!!cancelBatchId} onOpenChange={() => setCancelBatchId(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Cancel Batch?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {cancelBatchId && (() => {
+              const b = batches.find(b => b.id === cancelBatchId);
+              return `Cancel this batch? ${b?.pending_count || 0} pending messages will not be sent.`;
+            })()}
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setCancelBatchId(null)}>Keep Batch</Button>
+            <Button variant="destructive" onClick={() => cancelBatch(cancelBatchId!)} disabled={cancellingBatch}>
+              {cancellingBatch ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
+              Yes, Cancel Batch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

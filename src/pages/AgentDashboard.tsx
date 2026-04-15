@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,21 +11,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { toast } from 'sonner';
 import { getTodayStartUTC, toUAETime } from '@/lib/uaeTime';
 import {
-  MessageSquare, Clock, Wifi, WifiOff, FileText, Plus, Edit2, Trash2, Loader2, QrCode, Eye, Pause, Play
+  MessageSquare, Clock, Wifi, WifiOff, FileText, Plus, Edit2, Trash2, Loader2, QrCode, Pause, Play
 } from 'lucide-react';
+
+const BACKEND_URL = 'https://api.evaintelligencehub.online';
 
 const AgentDashboard = () => {
   const { user, profile, refreshProfile } = useAuth();
   const [stats, setStats] = useState({ sentToday: 0, pending: 0, templates: 0 });
   const [pendingContacts, setPendingContacts] = useState<any[]>([]);
-  const [sentToday, setSentToday] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [preparingQR, setPreparingQR] = useState(false);
-  const [debugStatus, setDebugStatus] = useState<string>('idle');
-  const [debugPollCount, setDebugPollCount] = useState(0);
-  const [debugLastPoll, setDebugLastPoll] = useState<string | null>(null);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ name: '', body: '' });
   const [editTemplate, setEditTemplate] = useState<any>(null);
@@ -34,21 +32,20 @@ const AgentDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [sendingPaused, setSendingPaused] = useState(false);
   const [togglingPause, setTogglingPause] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const autoStartedRef = useRef(false);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!user) return;
     const todayStart = getTodayStartUTC();
 
-    const [messagesRes, pendingRes, templatesRes, sentRes, contactsRes, profileRes] = await Promise.all([
+    const [messagesRes, pendingRes, templatesRes, profileRes] = await Promise.all([
       supabase.from('messages_log').select('id', { count: 'exact' }).eq('agent_id', user.id).gte('sent_at', todayStart),
-      supabase.from('owner_contacts').select('*').eq('assigned_agent', user.id).eq('message_status', 'pending'),
+      supabase.from('owner_contacts').select('*').eq('assigned_agent', user.id).eq('message_status', 'pending').order('created_at', { ascending: true }).limit(10),
       supabase.from('message_templates').select('*').eq('created_by', user.id),
-      supabase.from('messages_log').select('*').eq('agent_id', user.id).gte('sent_at', todayStart).order('sent_at', { ascending: false }),
-      supabase.from('owner_contacts').select('id, owner_name'),
       supabase.from('profiles').select('sending_paused').eq('id', user.id).single(),
     ]);
-
-    const contactMap = Object.fromEntries((contactsRes.data || []).map(c => [c.id, c]));
 
     setSendingPaused(profileRes.data?.sending_paused ?? false);
     setStats({
@@ -57,156 +54,153 @@ const AgentDashboard = () => {
       templates: templatesRes.data?.length || 0,
     });
     setPendingContacts(pendingRes.data || []);
-    setSentToday((sentRes.data || []).map(m => ({ ...m, contact_name: contactMap[m.contact_id]?.owner_name || '' })));
     setTemplates(templatesRes.data || []);
     setLoading(false);
   }, [user]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // Auto-refresh every 30s
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
-  const requestQR = async () => {
+  // Auto-start QR on load if disconnected
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    if (!user || !profile) return;
+    if (profile.whatsapp_session_status === 'connected') return;
+    autoStartedRef.current = true;
+    // Load settings then auto-start
+    supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single().then(({ data: settings }) => {
+      const url = settings?.whatsapp_backend_url || BACKEND_URL;
+      const key = settings?.whatsapp_api_key || '';
+      setApiKey(key);
+      startSession(url, key);
+    });
+  }, [user, profile]);
+
+  const startSession = async (url: string, key: string) => {
     setConnecting(true);
     setQrCode(null);
     setPreparingQR(false);
-    setDebugPollCount(0);
-    setDebugLastPoll(null);
-    setDebugStatus('starting');
-    console.log('[WA] requestQR called, agentId:', user?.id);
     try {
-      const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-      if (!settings?.whatsapp_backend_url) {
-        toast.error('WhatsApp backend not configured');
-        setConnecting(false);
-        setDebugStatus('error: no backend url');
-        return;
-      }
-      console.log('[WA] POST /api/session/start →', settings.whatsapp_backend_url);
-      const res = await fetch(`${settings.whatsapp_backend_url}/api/session/start`, {
+      const res = await fetch(`${url}/api/session/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
         body: JSON.stringify({ agentId: user?.id }),
       });
       const data = await res.json();
-      console.log('[WA] /api/session/start response (HTTP', res.status, '):', JSON.stringify({ status: data.status, error: data.error, message: data.message, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
+
       if (!res.ok || data.error) {
-        const msg = data.message || `Backend error (HTTP ${res.status})`;
-        console.error('[WA] /api/session/start returned error:', msg);
-        toast.error(`WhatsApp backend error: ${msg}`);
+        toast.error(`WhatsApp backend error: ${data.message || `HTTP ${res.status}`}`);
         setConnecting(false);
-        setPreparingQR(false);
-        setDebugStatus(`error: ${msg}`);
         return;
       }
+
       if (data.status === 'already_connected') {
         setConnecting(false);
-        setDebugStatus('already_connected');
         await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
         await refreshProfile();
         toast.success('WhatsApp already connected!');
         return;
       }
-      // Start polling regardless of whether qrCode is in the initial response
+
       if (data.qrCode) {
-        console.log('[WA] qrCode present in /start response, setting directly. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
         setQrCode(data.qrCode);
-        setDebugStatus('qr_from_start');
+        setPreparingQR(false);
       } else {
-        console.log('[WA] status=pending, qrCode=null in /start response — entering polling mode');
         setPreparingQR(true);
-        setDebugStatus('pending_no_qr_yet');
       }
-      pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
+
+      startPolling(url, key);
     } catch (err) {
-      console.error('[WA] /api/session/start error:', err);
       toast.error('Failed to connect to WhatsApp backend');
       setConnecting(false);
       setPreparingQR(false);
-      setDebugStatus('error: start failed');
     }
   };
 
-  const pollStatus = (url: string, key: string) => {
+  const startPolling = (url: string, key: string) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     const startTime = Date.now();
     const TIMEOUT_MS = 60_000;
-    let pollCount = 0;
-    const interval = setInterval(async () => {
-      pollCount += 1;
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const ts = new Date().toLocaleTimeString();
-      console.log(`[WA] poll #${pollCount} (${elapsed}s elapsed)`);
+
+    pollIntervalRef.current = setInterval(async () => {
+      const elapsed = Date.now() - startTime;
       try {
         const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
           headers: { 'x-api-key': key },
         });
         const data = await res.json();
-        console.log(`[WA] poll #${pollCount} response:`, JSON.stringify({ status: data.status, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
-        setDebugPollCount(pollCount);
-        setDebugLastPoll(ts);
+
         if (data.status === 'connected') {
-          console.log('[WA] status=connected → stopping poll, updating Supabase');
-          clearInterval(interval);
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
           setQrCode(null);
           setPreparingQR(false);
           setConnecting(false);
-          setDebugStatus('connected');
           await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
           await refreshProfile();
           toast.success('WhatsApp connected!');
         } else if (data.qrCode) {
-          console.log('[WA] qrCode received in poll, setting img src. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
           setQrCode(data.qrCode);
           setPreparingQR(false);
-          setDebugStatus('qr_received');
-        } else if (Date.now() - startTime >= TIMEOUT_MS) {
-          console.warn('[WA] 60s timeout reached with no QR code');
-          clearInterval(interval);
+        } else if (elapsed >= TIMEOUT_MS) {
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
           setQrCode(null);
           setPreparingQR(false);
           setConnecting(false);
-          setDebugStatus('error: timeout');
           toast.error('Could not generate QR code. Please try again.');
-        } else {
-          setDebugStatus(`polling (${elapsed}s)`);
         }
-      } catch (err) {
-        console.error(`[WA] poll #${pollCount} error:`, err);
-        clearInterval(interval);
+      } catch {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
         setQrCode(null);
         setPreparingQR(false);
         setConnecting(false);
-        setDebugStatus('error: poll failed');
       }
     }, 3000);
   };
 
+  useEffect(() => () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); }, []);
+
+  const requestQR = async () => {
+    const { data: settings } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
+    const url = settings?.whatsapp_backend_url || BACKEND_URL;
+    const key = settings?.whatsapp_api_key || '';
+    setApiKey(key);
+    startSession(url, key);
+  };
+
   const disconnect = async () => {
-    const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-    if (settings?.whatsapp_backend_url) {
-      try {
-        await fetch(`${settings.whatsapp_backend_url}/api/session/disconnect`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-          body: JSON.stringify({ agentId: user?.id }),
-        });
-      } catch { /* ignore */ }
-    }
+    const { data: settings } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
+    const url = settings?.whatsapp_backend_url || BACKEND_URL;
+    const key = settings?.whatsapp_api_key || '';
+    try {
+      await fetch(`${url}/api/session/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId: user?.id }),
+      });
+    } catch { /* ignore */ }
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     await supabase.from('profiles').update({ whatsapp_session_status: 'disconnected' }).eq('id', user?.id);
     await refreshProfile();
+    autoStartedRef.current = false;
     toast.success('WhatsApp disconnected');
   };
 
   const togglePause = async (pause: boolean) => {
     setTogglingPause(true);
     try {
-      const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-      if (settings?.whatsapp_backend_url) {
-        const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
-        await fetch(`${settings.whatsapp_backend_url}${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-          body: JSON.stringify({ agentId: user?.id }),
-        });
-      }
+      const { data: settings } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
+      const url = settings?.whatsapp_backend_url || BACKEND_URL;
+      const key = settings?.whatsapp_api_key || '';
+      const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
+      await fetch(`${url}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId: user?.id }),
+      });
       await supabase.from('profiles').update({ sending_paused: pause }).eq('id', user?.id);
       setSendingPaused(pause);
       toast.success(pause ? 'Sending paused' : 'Sending resumed');
@@ -216,6 +210,14 @@ const AgentDashboard = () => {
     setTogglingPause(false);
   };
 
+  const cancelContact = async (id: string) => {
+    const { error } = await supabase.from('owner_contacts').update({ message_status: 'cancelled' }).eq('id', id);
+    if (error) { toast.error('Failed to cancel'); return; }
+    toast.success('Contact cancelled');
+    setPendingContacts(prev => prev.filter(c => c.id !== id));
+    setStats(prev => ({ ...prev, pending: Math.max(0, prev.pending - 1) }));
+  };
+
   const saveTemplate = async () => {
     if (!newTemplate.name || !newTemplate.body) return;
     const { error } = await supabase.from('message_templates').insert({
@@ -223,7 +225,7 @@ const AgentDashboard = () => {
       body: newTemplate.body,
       created_by: user!.id,
     });
-    if (error) { console.error('[saveTemplate] error:', error); toast.error('Failed to save template'); }
+    if (error) toast.error('Failed to save template');
     else {
       toast.success('Template created');
       setNewTemplate({ name: '', body: '' });
@@ -260,69 +262,105 @@ const AgentDashboard = () => {
 
   return (
     <div className="space-y-8">
-      {/* Stats */}
+      {/* Stats — 4 cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card><CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Messages Sent Today</CardTitle>
-          <MessageSquare className="w-5 h-5 text-primary" />
-        </CardHeader><CardContent><p className="text-3xl font-bold text-primary">{stats.sentToday} <span className="text-lg text-muted-foreground">of 50</span></p></CardContent></Card>
+        {/* 1. WhatsApp Status */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">WhatsApp Status</CardTitle>
+            {isConnected ? <Wifi className="w-5 h-5 text-green-600" /> : <WifiOff className="w-5 h-5 text-destructive" />}
+          </CardHeader>
+          <CardContent>
+            <div className={`flex items-center gap-2 ${isConnected ? 'text-green-600' : 'text-destructive'}`}>
+              <span className={`w-4 h-4 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              <span className="text-2xl font-bold">{isConnected ? 'Connected' : 'Disconnected'}</span>
+            </div>
+          </CardContent>
+        </Card>
 
-        <Card><CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Pending Contacts</CardTitle>
-          <Clock className="w-5 h-5 text-accent" />
-        </CardHeader><CardContent><p className="text-3xl font-bold text-accent">{stats.pending}</p></CardContent></Card>
+        {/* 2. Sent Today */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Sent Today</CardTitle>
+            <MessageSquare className="w-5 h-5 text-primary" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold text-primary">{stats.sentToday} <span className="text-lg text-muted-foreground">of 50</span></p>
+          </CardContent>
+        </Card>
 
-        <Card><CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">WhatsApp Status</CardTitle>
-          {isConnected ? <Wifi className="w-5 h-5 text-green-600" /> : <WifiOff className="w-5 h-5 text-destructive" />}
-        </CardHeader><CardContent>
-          <Badge variant={isConnected ? 'default' : 'destructive'} className={isConnected ? 'bg-green-600 text-white' : ''}>
-            {isConnected ? 'Connected' : 'Disconnected'}
-          </Badge>
-          {isConnected && <Button variant="ghost" size="sm" className="ml-2 text-destructive" onClick={disconnect}>Disconnect</Button>}
-        </CardContent></Card>
+        {/* 3. Pending in Queue */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Pending in Queue</CardTitle>
+            <Clock className="w-5 h-5 text-accent" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold text-accent">{stats.pending}</p>
+          </CardContent>
+        </Card>
 
-        <Card><CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Templates Created</CardTitle>
-          <FileText className="w-5 h-5 text-primary" />
-        </CardHeader><CardContent><p className="text-3xl font-bold text-primary">{stats.templates}</p></CardContent></Card>
+        {/* 4. Sending Status */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Sending Status</CardTitle>
+            <FileText className="w-5 h-5 text-primary" />
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className={`text-2xl font-bold ${sendingPaused ? 'text-yellow-600' : 'text-green-600'}`}>
+              {sendingPaused ? 'Paused' : 'Running'}
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* WhatsApp Connection Section */}
+      {/* WhatsApp Connection + Pause Toggle */}
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><QrCode className="w-5 h-5" /> WhatsApp Connection</CardTitle></CardHeader>
         <CardContent className="flex flex-col items-center gap-4">
           {isConnected ? (
             <>
               <Badge className="bg-green-600 text-white text-lg px-6 py-2">Connected</Badge>
-              <div className="flex items-center gap-2">
-                {sendingPaused ? (
-                  <><span className="w-3 h-3 rounded-full bg-yellow-500" /><span className="text-sm font-medium text-yellow-600">Sending paused</span></>
-                ) : (
-                  <><span className="w-3 h-3 rounded-full bg-green-500 animate-pulse" /><span className="text-sm font-medium text-green-600">Sending active</span></>
-                )}
-              </div>
-              <div className="flex gap-2">
-                {sendingPaused ? (
-                  <Button onClick={() => togglePause(false)} disabled={togglingPause} className="bg-green-600 hover:bg-green-700 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Play className="w-4 h-4 mr-1" />} Resume Sending
-                  </Button>
-                ) : (
-                  <Button onClick={() => togglePause(true)} disabled={togglingPause} className="bg-yellow-500 hover:bg-yellow-600 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Pause className="w-4 h-4 mr-1" />} Pause Sending
-                  </Button>
-                )}
-              </div>
+              {/* Large Pause/Resume Toggle */}
+              {sendingPaused ? (
+                <Button
+                  onClick={() => togglePause(false)}
+                  disabled={togglingPause}
+                  size="lg"
+                  className="bg-green-600 hover:bg-green-700 text-white text-base px-8 py-6 h-auto"
+                >
+                  {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Play className="w-5 h-5 mr-2" />}
+                  Sending Paused — click to resume
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => togglePause(true)}
+                  disabled={togglingPause}
+                  size="lg"
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white text-base px-8 py-6 h-auto"
+                >
+                  {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Pause className="w-5 h-5 mr-2" />}
+                  Sending Active — click to pause
+                </Button>
+              )}
               <p className="text-sm text-muted-foreground text-center">
                 Your WhatsApp is active. Messages will send automatically between 9am and 7pm.
               </p>
-              <Button variant="destructive" onClick={disconnect}>Disconnect</Button>
+              <Button variant="destructive" size="sm" onClick={disconnect}>Disconnect</Button>
+            </>
+          ) : connecting && !qrCode && !preparingQR ? (
+            <>
+              <div className="flex flex-col items-center gap-3">
+                <Loader2 className="animate-spin w-10 h-10 text-primary" />
+                <p className="text-base font-medium text-muted-foreground">Connecting your WhatsApp...</p>
+              </div>
             </>
           ) : qrCode ? (
             <>
               <img src={qrCode} alt="WhatsApp QR Code" className="border rounded-lg" style={{ width: 256, height: 256 }} />
+              <p className="text-sm font-medium text-center">Scan this with your WhatsApp to start sending</p>
               <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="animate-spin w-4 h-4" /> Connecting — keep this page open
+                <Loader2 className="animate-spin w-4 h-4" /> Waiting for scan — keep this page open
               </div>
             </>
           ) : preparingQR ? (
@@ -345,75 +383,35 @@ const AgentDashboard = () => {
               </Button>
             </>
           )}
-          {/* DEBUG PANEL — remove after diagnosis */}
-          {debugStatus !== 'idle' && (
-            <div className="w-full mt-2 rounded border border-yellow-400 bg-yellow-50 p-3 text-xs font-mono text-yellow-900 space-y-1">
-              <p className="font-bold text-yellow-700">🔍 WA Debug Panel</p>
-              <p><span className="font-semibold">status:</span> {debugStatus}</p>
-              <p><span className="font-semibold">qrCode state:</span> {qrCode ? `set (${qrCode.length} chars, prefix: ${qrCode.slice(0, 30)}…)` : 'null'}</p>
-              <p><span className="font-semibold">preparingQR:</span> {String(preparingQR)}</p>
-              <p><span className="font-semibold">polls fired:</span> {debugPollCount}</p>
-              <p><span className="font-semibold">last poll at:</span> {debugLastPoll ?? '—'}</p>
-            </div>
-          )}
         </CardContent>
       </Card>
 
-      {/* Today's Queue */}
+      {/* Live Queue — Next 10 Pending */}
       <Card>
-        <CardHeader><CardTitle>Today's Queue</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Pending Queue (Next 10)</CardTitle></CardHeader>
         <CardContent>
           {pendingContacts.length === 0 ? (
             <p className="text-muted-foreground text-sm">No pending contacts</p>
           ) : (
             <Table>
               <TableHeader><TableRow>
-                <TableHead>Owner Name</TableHead><TableHead>Building</TableHead><TableHead>Number 1</TableHead><TableHead>Number 2</TableHead><TableHead>Message</TableHead><TableHead>Status</TableHead>
+                <TableHead>Owner Name</TableHead><TableHead>Number</TableHead><TableHead>Message Preview</TableHead><TableHead></TableHead>
               </TableRow></TableHeader>
               <TableBody>
                 {pendingContacts.map((c) => (
                   <TableRow key={c.id}>
-                    <TableCell>{c.owner_name}</TableCell>
-                    <TableCell>{c.building_name}</TableCell>
-                    <TableCell>{c.number_1}</TableCell>
-                    <TableCell>{c.number_2 || ''}</TableCell>
-                    <TableCell className="max-w-[200px]">
+                    <TableCell className="font-medium">{c.owner_name}</TableCell>
+                    <TableCell className="font-mono text-sm">{c.number_1}</TableCell>
+                    <TableCell className="max-w-[300px]">
                       <button onClick={() => setExpandedMsg(expandedMsg === c.id ? null : c.id)} className="text-left text-sm hover:text-primary">
-                        {expandedMsg === c.id ? c.generated_message : (c.generated_message?.slice(0, 60) + (c.generated_message?.length > 60 ? '...' : ''))}
+                        {expandedMsg === c.id ? c.generated_message : (c.generated_message?.slice(0, 80) + (c.generated_message?.length > 80 ? '...' : ''))}
                       </button>
                     </TableCell>
-                    <TableCell><Badge variant="secondary">Pending</Badge></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Sent Today */}
-      <Card>
-        <CardHeader><CardTitle>Sent Today</CardTitle></CardHeader>
-        <CardContent>
-          {sentToday.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No messages sent today</p>
-          ) : (
-            <Table>
-              <TableHeader><TableRow>
-                <TableHead>Owner Name</TableHead><TableHead>Number Used</TableHead><TableHead>Message</TableHead><TableHead>Sent At</TableHead><TableHead>Status</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {sentToday.map((m) => (
-                  <TableRow key={m.id}>
-                    <TableCell>{m.contact_name || ''}</TableCell>
-                    <TableCell>{m.number_used}</TableCell>
-                    <TableCell className="max-w-[200px]">
-                      <button onClick={() => setExpandedMsg(expandedMsg === m.id ? null : m.id)} className="text-left text-sm hover:text-primary">
-                        {expandedMsg === m.id ? m.message_text : (m.message_text?.slice(0, 60) + '...')}
-                      </button>
+                    <TableCell>
+                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => cancelContact(c.id)}>
+                        Cancel
+                      </Button>
                     </TableCell>
-                    <TableCell>{toUAETime(m.sent_at)}</TableCell>
-                    <TableCell><Badge className="bg-green-600 text-white">{m.delivery_status}</Badge></TableCell>
                   </TableRow>
                 ))}
               </TableBody>

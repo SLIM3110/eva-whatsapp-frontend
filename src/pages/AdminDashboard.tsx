@@ -9,11 +9,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { getTodayStartUTC, toUAETime } from '@/lib/uaeTime';
 import { toast } from 'sonner';
-import { MessageSquare, Users, Wifi, AlertTriangle, Copy, Loader2, UserPlus, Trash2, Plus, QrCode, WifiOff, Pause, Play } from 'lucide-react';
+import { MessageSquare, Users, AlertTriangle, Copy, Loader2, UserPlus, Trash2, Plus, Wifi, WifiOff, Pause, Play, RefreshCw } from 'lucide-react';
+
+const BACKEND_URL = 'https://api.evaintelligencehub.online';
 
 const AdminDashboard = () => {
-  const { user, profile, refreshProfile } = useAuth();
-  const [stats, setStats] = useState({ totalSent: 0, activeAgents: 0 });
+  const { user } = useAuth();
+  const [stats, setStats] = useState({ totalSent: 0, activeAgents: 0, failedToday: 0 });
   const [agents, setAgents] = useState<any[]>([]);
   const [failedMessages, setFailedMessages] = useState<any[]>([]);
   const [disconnectedAgents, setDisconnectedAgents] = useState<any[]>([]);
@@ -22,75 +24,82 @@ const AdminDashboard = () => {
   const [generating, setGenerating] = useState(false);
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [newBlacklistNumber, setNewBlacklistNumber] = useState('');
-  const [qrCode, setQrCode] = useState<string | null>(null);
-  const [connectingWA, setConnectingWA] = useState(false);
-  const [preparingQR, setPreparingQR] = useState(false);
-  const [debugStatus, setDebugStatus] = useState<string>('idle');
-  const [debugPollCount, setDebugPollCount] = useState(0);
-  const [debugLastPoll, setDebugLastPoll] = useState<string | null>(null);
-  const [sendingPaused, setSendingPaused] = useState(false);
-  const [togglingPause, setTogglingPause] = useState(false);
+  const [failedModalOpen, setFailedModalOpen] = useState(false);
+  const [togglingAgent, setTogglingAgent] = useState<string | null>(null);
+  const [togglingAll, setTogglingAll] = useState(false);
+  const [retryingAll, setRetryingAll] = useState(false);
+
+  const getSettings = async () => {
+    const { data } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
+    return { url: data?.whatsapp_backend_url || BACKEND_URL, key: data?.whatsapp_api_key || '' };
+  };
 
   const fetchData = useCallback(async () => {
     const todayStart = getTodayStartUTC();
-    const now = new Date();
-    const uaeNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
-    const monthStart = new Date(uaeNow.getFullYear(), uaeNow.getMonth(), 1);
-    const monthStartUTC = new Date(monthStart.getTime() - 4 * 60 * 60 * 1000).toISOString();
 
-    const [sentRes, agentsRes, profileRes] = await Promise.all([
+    const [sentRes, agentsRes] = await Promise.all([
       supabase.from('messages_log').select('id', { count: 'exact' }).gte('sent_at', todayStart),
       supabase.from('profiles').select('*').eq('role', 'agent'),
-      user ? supabase.from('profiles').select('sending_paused').eq('id', user.id).single() : Promise.resolve({ data: null }),
     ]);
-    setSendingPaused(profileRes.data?.sending_paused ?? false);
 
     const agentData = agentsRes.data || [];
-    setStats({
-      totalSent: sentRes.count || 0,
-      activeAgents: agentData.filter(a => a.is_active).length,
-    });
 
     const agentIds = agentData.map(a => a.id);
 
+    let agentMsgCounts: Record<string, number> = {};
+    let agentPendingCounts: Record<string, number> = {};
+    let failed: any[] = [];
+
     if (agentIds.length > 0) {
-      const { data: agentMessages } = await supabase
-        .from('messages_log')
-        .select('agent_id, sent_at, delivery_status, number_used, contact_id')
-        .in('agent_id', agentIds)
-        .gte('sent_at', todayStart);
+      const [agentMessages, pendingContacts] = await Promise.all([
+        supabase
+          .from('messages_log')
+          .select('agent_id, sent_at, delivery_status, number_used, contact_id, message_text')
+          .in('agent_id', agentIds)
+          .gte('sent_at', todayStart),
+        supabase
+          .from('owner_contacts')
+          .select('assigned_agent')
+          .in('assigned_agent', agentIds)
+          .eq('message_status', 'pending'),
+      ]);
 
-      const agentMsgCounts: Record<string, number> = {};
-      const agentLastActive: Record<string, string> = {};
-      const failed: any[] = [];
-
-      (agentMessages || []).forEach(m => {
+      (agentMessages.data || []).forEach(m => {
         agentMsgCounts[m.agent_id] = (agentMsgCounts[m.agent_id] || 0) + 1;
-        if (!agentLastActive[m.agent_id] || m.sent_at > agentLastActive[m.agent_id]) {
-          agentLastActive[m.agent_id] = m.sent_at;
-        }
         if (m.delivery_status === 'failed') {
           const agent = agentData.find(a => a.id === m.agent_id);
           failed.push({ ...m, agent_name: agent ? `${agent.first_name} ${agent.last_name}` : 'Unknown' });
         }
       });
 
-      setAgents(agentData.map(a => ({
-        ...a,
-        sentToday: agentMsgCounts[a.id] || 0,
-        lastActive: agentLastActive[a.id] || null,
-      })));
-
-      setFailedMessages(failed.slice(0, 10));
-      setDisconnectedAgents(agentData.filter(a => a.whatsapp_session_status !== 'connected'));
-    } else {
-      setAgents([]);
+      (pendingContacts.data || []).forEach(c => {
+        agentPendingCounts[c.assigned_agent] = (agentPendingCounts[c.assigned_agent] || 0) + 1;
+      });
     }
 
-    setLoading(false);
-  }, [user]);
+    setStats({
+      totalSent: sentRes.count || 0,
+      activeAgents: agentData.filter(a => a.is_active).length,
+      failedToday: failed.length,
+    });
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+    setAgents(agentData.map(a => ({
+      ...a,
+      sentToday: agentMsgCounts[a.id] || 0,
+      pendingCount: agentPendingCounts[a.id] || 0,
+    })));
+
+    setFailedMessages(failed.slice(0, 50));
+    setDisconnectedAgents(agentData.filter(a => a.whatsapp_session_status !== 'connected'));
+    setLoading(false);
+  }, []);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
   const generateCode = async () => {
     setGenerating(true);
@@ -117,168 +126,103 @@ const AdminDashboard = () => {
 
   const removeFromBlacklist = (num: string) => {
     setBlacklist(prev => prev.filter(n => n !== num));
-    toast.success('Number removed from blacklist');
   };
 
-  const togglePause = async (pause: boolean) => {
-    setTogglingPause(true);
+  const toggleAgentPause = async (agentId: string, pause: boolean) => {
+    setTogglingAgent(agentId);
     try {
-      const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-      if (settings?.whatsapp_backend_url) {
-        const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
-        await fetch(`${settings.whatsapp_backend_url}${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-          body: JSON.stringify({ agentId: user?.id }),
-        });
-      }
-      await supabase.from('profiles').update({ sending_paused: pause }).eq('id', user?.id);
-      setSendingPaused(pause);
-      toast.success(pause ? 'Sending paused' : 'Sending resumed');
-    } catch {
-      toast.error('Failed to update sending status');
-    }
-    setTogglingPause(false);
-  };
-
-  const requestQR = async () => {
-    setConnectingWA(true);
-    setQrCode(null);
-    setPreparingQR(false);
-    setDebugPollCount(0);
-    setDebugLastPoll(null);
-    setDebugStatus('starting');
-    console.log('[WA-Admin] requestQR called, agentId:', user?.id);
-    try {
-      const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-      if (!settings?.whatsapp_backend_url) {
-        toast.error('WhatsApp backend not configured');
-        setConnectingWA(false);
-        setDebugStatus('error: no backend url');
-        return;
-      }
-      console.log('[WA-Admin] POST /api/session/start →', settings.whatsapp_backend_url);
-      const res = await fetch(`${settings.whatsapp_backend_url}/api/session/start`, {
+      const { url, key } = await getSettings();
+      const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
+      await fetch(`${url}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-        body: JSON.stringify({ agentId: user?.id }),
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId }),
       });
-      const data = await res.json();
-      console.log('[WA-Admin] /api/session/start response (HTTP', res.status, '):', JSON.stringify({ status: data.status, error: data.error, message: data.message, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
-      if (!res.ok || data.error) {
-        const msg = data.message || `Backend error (HTTP ${res.status})`;
-        console.error('[WA-Admin] /api/session/start returned error:', msg);
-        toast.error(`WhatsApp backend error: ${msg}`);
-        setConnectingWA(false);
-        setPreparingQR(false);
-        setDebugStatus(`error: ${msg}`);
-        return;
-      }
-      if (data.status === 'already_connected') {
-        setConnectingWA(false);
-        setDebugStatus('already_connected');
-        await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
-        await refreshProfile();
-        toast.success('WhatsApp already connected!');
-        return;
-      }
-      if (data.qrCode) {
-        console.log('[WA-Admin] qrCode present in /start response, setting directly. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
-        setQrCode(data.qrCode);
-        setDebugStatus('qr_from_start');
-      } else {
-        console.log('[WA-Admin] status=pending, qrCode=null in /start response — entering polling mode');
-        setPreparingQR(true);
-        setDebugStatus('pending_no_qr_yet');
-      }
-      pollStatus(settings.whatsapp_backend_url, settings.whatsapp_api_key || '');
-    } catch (err) {
-      console.error('[WA-Admin] /api/session/start error:', err);
-      toast.error('Failed to connect to WhatsApp backend');
-      setConnectingWA(false);
-      setPreparingQR(false);
-      setDebugStatus('error: start failed');
+      await supabase.from('profiles').update({ sending_paused: pause }).eq('id', agentId);
+      setAgents(prev => prev.map(a => a.id === agentId ? { ...a, sending_paused: pause } : a));
+      toast.success(pause ? 'Agent paused' : 'Agent resumed');
+    } catch {
+      toast.error('Failed to update agent status');
     }
+    setTogglingAgent(null);
   };
 
-  const pollStatus = (url: string, key: string) => {
-    const startTime = Date.now();
-    const TIMEOUT_MS = 60_000;
-    let pollCount = 0;
-    const interval = setInterval(async () => {
-      pollCount += 1;
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const ts = new Date().toLocaleTimeString();
-      console.log(`[WA-Admin] poll #${pollCount} (${elapsed}s elapsed)`);
-      try {
-        const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, {
-          headers: { 'x-api-key': key },
-        });
-        const data = await res.json();
-        console.log(`[WA-Admin] poll #${pollCount} response:`, JSON.stringify({ status: data.status, qrCode: data.qrCode ? `[present, length=${data.qrCode.length}]` : null }));
-        setDebugPollCount(pollCount);
-        setDebugLastPoll(ts);
-        if (data.status === 'connected') {
-          console.log('[WA-Admin] status=connected → stopping poll, updating Supabase');
-          clearInterval(interval);
-          setQrCode(null);
-          setPreparingQR(false);
-          setConnectingWA(false);
-          setDebugStatus('connected');
-          await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
-          await refreshProfile();
-          toast.success('WhatsApp connected!');
-        } else if (data.qrCode) {
-          console.log('[WA-Admin] qrCode received in poll, setting img src. Length:', data.qrCode.length, 'prefix:', data.qrCode.slice(0, 40));
-          setQrCode(data.qrCode);
-          setPreparingQR(false);
-          setDebugStatus('qr_received');
-        } else if (Date.now() - startTime >= TIMEOUT_MS) {
-          console.warn('[WA-Admin] 60s timeout reached with no QR code');
-          clearInterval(interval);
-          setQrCode(null);
-          setPreparingQR(false);
-          setConnectingWA(false);
-          setDebugStatus('error: timeout');
-          toast.error('Could not generate QR code. Please try again.');
-        } else {
-          setDebugStatus(`polling (${elapsed}s)`);
-        }
-      } catch (err) {
-        console.error(`[WA-Admin] poll #${pollCount} error:`, err);
-        clearInterval(interval);
-        setQrCode(null);
-        setPreparingQR(false);
-        setConnectingWA(false);
-        setDebugStatus('error: poll failed');
-      }
-    }, 3000);
-  };
-
-  const disconnectWA = async () => {
-    const { data: settings } = await supabase.from('api_settings').select('*').eq('id', 1).single();
-    if (settings?.whatsapp_backend_url) {
-      try {
-        await fetch(`${settings.whatsapp_backend_url}/api/session/disconnect`, {
+  const pauseAll = async () => {
+    setTogglingAll(true);
+    try {
+      const { url, key } = await getSettings();
+      const agentIds = agents.map(a => a.id);
+      await Promise.all(agentIds.map(id =>
+        fetch(`${url}/api/session/pause`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': settings.whatsapp_api_key || '' },
-          body: JSON.stringify({ agentId: user?.id }),
-        });
-      } catch { /* ignore */ }
+          headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+          body: JSON.stringify({ agentId: id }),
+        }).catch(() => {})
+      ));
+      if (agentIds.length > 0) {
+        await supabase.from('profiles').update({ sending_paused: true }).in('id', agentIds);
+      }
+      setAgents(prev => prev.map(a => ({ ...a, sending_paused: true })));
+      toast.success('All agents paused');
+    } catch {
+      toast.error('Failed to pause all agents');
     }
-    await supabase.from('profiles').update({ whatsapp_session_status: 'disconnected' }).eq('id', user?.id);
-    await refreshProfile();
-    toast.success('WhatsApp disconnected');
+    setTogglingAll(false);
   };
 
-  const isConnected = profile?.whatsapp_session_status === 'connected';
+  const resumeAll = async () => {
+    setTogglingAll(true);
+    try {
+      const { url, key } = await getSettings();
+      const agentIds = agents.map(a => a.id);
+      await Promise.all(agentIds.map(id =>
+        fetch(`${url}/api/session/resume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+          body: JSON.stringify({ agentId: id }),
+        }).catch(() => {})
+      ));
+      if (agentIds.length > 0) {
+        await supabase.from('profiles').update({ sending_paused: false }).in('id', agentIds);
+      }
+      setAgents(prev => prev.map(a => ({ ...a, sending_paused: false })));
+      toast.success('All agents resumed');
+    } catch {
+      toast.error('Failed to resume all agents');
+    }
+    setTogglingAll(false);
+  };
+
+  const retryAllFailed = async () => {
+    setRetryingAll(true);
+    const todayStart = getTodayStartUTC();
+    try {
+      // Get failed contact IDs from today's messages
+      const { data: failedLogs } = await supabase
+        .from('messages_log')
+        .select('contact_id')
+        .gte('sent_at', todayStart)
+        .eq('delivery_status', 'failed');
+
+      const contactIds = (failedLogs || []).map(m => m.contact_id).filter(Boolean);
+      if (contactIds.length > 0) {
+        await supabase.from('owner_contacts').update({ message_status: 'pending' }).in('id', contactIds);
+      }
+      toast.success(`${contactIds.length} failed contacts reset to pending`);
+      setFailedModalOpen(false);
+      fetchData();
+    } catch {
+      toast.error('Failed to retry');
+    }
+    setRetryingAll(false);
+  };
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
 
   return (
     <div className="space-y-8">
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Total Messages Today</CardTitle>
@@ -293,146 +237,108 @@ const AdminDashboard = () => {
           </CardHeader>
           <CardContent><p className="text-3xl font-bold text-accent">{stats.activeAgents}</p></CardContent>
         </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Failed Messages Today</CardTitle>
+            <AlertTriangle className="w-5 h-5 text-destructive" />
+          </CardHeader>
+          <CardContent className="flex items-center justify-between">
+            <p className="text-3xl font-bold text-destructive">{stats.failedToday}</p>
+            {stats.failedToday > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setFailedModalOpen(true)}>View</Button>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
-      {/* WhatsApp Connection */}
+      {/* Agent Sendout Status */}
       <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2"><QrCode className="w-5 h-5" /> WhatsApp Connection</CardTitle></CardHeader>
-        <CardContent className="flex flex-col items-center gap-4">
-          {isConnected ? (
-            <>
-              <Badge className="bg-green-600 text-white text-lg px-6 py-2">Connected</Badge>
-              <div className="flex items-center gap-2">
-                {sendingPaused ? (
-                  <><span className="w-3 h-3 rounded-full bg-yellow-500" /><span className="text-sm font-medium text-yellow-600">Sending paused</span></>
-                ) : (
-                  <><span className="w-3 h-3 rounded-full bg-green-500 animate-pulse" /><span className="text-sm font-medium text-green-600">Sending active</span></>
-                )}
-              </div>
-              <div className="flex gap-2">
-                {sendingPaused ? (
-                  <Button onClick={() => togglePause(false)} disabled={togglingPause} className="bg-green-600 hover:bg-green-700 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Play className="w-4 h-4 mr-1" />} Resume Sending
-                  </Button>
-                ) : (
-                  <Button onClick={() => togglePause(true)} disabled={togglingPause} className="bg-yellow-500 hover:bg-yellow-600 text-white">
-                    {togglingPause ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Pause className="w-4 h-4 mr-1" />} Pause Sending
-                  </Button>
-                )}
-              </div>
-              <p className="text-sm text-muted-foreground text-center">
-                Your WhatsApp is active. Messages will send automatically between 9am and 7pm.
-              </p>
-              <Button variant="destructive" onClick={disconnectWA}>Disconnect</Button>
-            </>
-          ) : qrCode ? (
-            <>
-              <img src={qrCode} alt="WhatsApp QR Code" className="border rounded-lg" style={{ width: 256, height: 256 }} />
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="animate-spin w-4 h-4" /> Connecting — keep this page open
-              </div>
-            </>
-          ) : preparingQR ? (
-            <>
-              <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
-                <div className="flex flex-col items-center gap-2">
-                  <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground text-center px-4">Session initialising — QR code will appear in a few seconds</p>
-                </div>
-              </div>
-            </>
+        <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
+          <CardTitle>Agent Sendout Status</CardTitle>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={pauseAll} disabled={togglingAll}>
+              {togglingAll ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Pause className="w-4 h-4 mr-1" />}
+              Pause All
+            </Button>
+            <Button size="sm" variant="outline" onClick={resumeAll} disabled={togglingAll}>
+              {togglingAll ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <Play className="w-4 h-4 mr-1" />}
+              Resume All
+            </Button>
+            <Button size="sm" variant="ghost" onClick={fetchData}>
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {agents.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No agents registered</p>
           ) : (
-            <>
-              <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
-                <p className="text-sm text-muted-foreground text-center px-4">Scan this code with your WhatsApp to connect</p>
-              </div>
-              <Button onClick={requestQR} disabled={connectingWA}>
-                {connectingWA ? <Loader2 className="animate-spin mr-2" /> : null}
-                Request QR Code
-              </Button>
-            </>
-          )}
-          {/* DEBUG PANEL — remove after diagnosis */}
-          {debugStatus !== 'idle' && (
-            <div className="w-full mt-2 rounded border border-yellow-400 bg-yellow-50 p-3 text-xs font-mono text-yellow-900 space-y-1">
-              <p className="font-bold text-yellow-700">🔍 WA Debug Panel (Admin)</p>
-              <p><span className="font-semibold">status:</span> {debugStatus}</p>
-              <p><span className="font-semibold">qrCode state:</span> {qrCode ? `set (${qrCode.length} chars, prefix: ${qrCode.slice(0, 30)}…)` : 'null'}</p>
-              <p><span className="font-semibold">preparingQR:</span> {String(preparingQR)}</p>
-              <p><span className="font-semibold">polls fired:</span> {debugPollCount}</p>
-              <p><span className="font-semibold">last poll at:</span> {debugLastPoll ?? '—'}</p>
-            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>WhatsApp</TableHead>
+                  <TableHead>Sent Today</TableHead>
+                  <TableHead>Pending</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {agents.map(a => (
+                  <TableRow key={a.id}>
+                    <TableCell className="font-medium">{a.first_name} {a.last_name}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {a.whatsapp_session_status === 'connected'
+                          ? <><Wifi className="w-4 h-4 text-green-600" /><span className="text-green-600 text-sm">Connected</span></>
+                          : <><WifiOff className="w-4 h-4 text-destructive" /><span className="text-destructive text-sm">Disconnected</span></>
+                        }
+                      </div>
+                    </TableCell>
+                    <TableCell>{a.sentToday} of 50</TableCell>
+                    <TableCell>{a.pendingCount}</TableCell>
+                    <TableCell>
+                      {a.sending_paused
+                        ? <Badge className="bg-yellow-500 text-white">Paused</Badge>
+                        : <Badge className="bg-green-600 text-white">Running</Badge>
+                      }
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={togglingAgent === a.id}
+                          onClick={() => toggleAgentPause(a.id, true)}
+                        >
+                          {togglingAgent === a.id ? <Loader2 className="animate-spin w-3 h-3" /> : <Pause className="w-3 h-3 mr-1" />}
+                          Pause
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={togglingAgent === a.id}
+                          onClick={() => toggleAgentPause(a.id, false)}
+                        >
+                          {togglingAgent === a.id ? <Loader2 className="animate-spin w-3 h-3" /> : <Play className="w-3 h-3 mr-1" />}
+                          Resume
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           )}
         </CardContent>
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left — Unit Collector Summary */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Agent Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {agents.length === 0 ? (
-              <p className="text-muted-foreground text-sm">No agents registered</p>
-            ) : (
-              <div className="space-y-3">
-                {agents.map(a => (
-                  <div key={a.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
-                    <div>
-                      <p className="font-medium text-sm">{a.first_name} {a.last_name}</p>
-                      <p className="text-xs text-muted-foreground">{a.sentToday}/50 sent • {a.lastActive ? toUAETime(a.lastActive) : 'Never active'}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {a.sending_paused && <Badge variant="secondary" className="text-xs">Paused</Badge>}
-                      <span className={`w-3 h-3 rounded-full ${a.whatsapp_session_status === 'connected' ? 'bg-green-500' : 'bg-destructive'}`} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Centre — Salem Engine Summary */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">Salem Engine</CardTitle></CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground text-sm mb-4">Sequence stage breakdown</p>
-            <div className="space-y-2">
-              {['Day 1', 'Day 3', 'Day 7', 'Completed', 'Paused'].map(stage => (
-                <div key={stage} className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">{stage}</span>
-                  <Badge variant="secondary">0</Badge>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 pt-4 border-t">
-              <p className="text-sm"><span className="text-muted-foreground">Total Leads:</span> <strong>0</strong></p>
-              <p className="text-sm"><span className="text-muted-foreground">Reply Rate:</span> <strong>0%</strong></p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Right — System Health */}
+        {/* System Health */}
         <Card>
           <CardHeader><CardTitle className="text-base">System Health</CardTitle></CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground mb-2">Failed Messages (24h)</p>
-              {failedMessages.length === 0 ? (
-                <p className="text-sm text-green-600">No failures</p>
-              ) : (
-                <div className="space-y-2">
-                  {failedMessages.map(m => (
-                    <div key={m.id} className="text-xs p-2 rounded border bg-destructive/5">
-                      <p className="font-medium">{m.agent_name}</p>
-                      <p className="text-muted-foreground">{m.number_used} • {toUAETime(m.sent_at)}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
             <div>
               <p className="text-sm font-medium text-muted-foreground mb-2">Disconnected Agents</p>
               {disconnectedAgents.length === 0 ? (
@@ -453,42 +359,54 @@ const AdminDashboard = () => {
             </div>
           </CardContent>
         </Card>
-      </div>
 
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Salem Engine Summary */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Salem Engine</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground text-sm mb-4">Sequence stage breakdown</p>
+            <div className="space-y-2">
+              {['Day 1', 'Day 3', 'Day 7', 'Completed', 'Paused'].map(stage => (
+                <div key={stage} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{stage}</span>
+                  <Badge variant="secondary">0</Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Quick Actions */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Quick Actions</CardTitle>
             <Button onClick={generateCode} disabled={generating} size="sm">
               {generating ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : <UserPlus className="w-4 h-4 mr-2" />}
-              Generate Activation Code
+              Generate Code
             </Button>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">Generate activation codes for new users and manage system settings from here.</p>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader><CardTitle className="text-base">Salem Blacklist</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex gap-2">
-              <Input placeholder="Enter phone number" value={newBlacklistNumber} onChange={e => setNewBlacklistNumber(e.target.value)} />
-              <Button size="sm" onClick={addToBlacklist}><Plus className="w-4 h-4" /></Button>
-            </div>
-            {blacklist.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No blacklisted numbers</p>
-            ) : (
-              <div className="space-y-1">
-                {blacklist.map(num => (
-                  <div key={num} className="flex items-center justify-between text-sm p-2 rounded border">
-                    <span className="font-mono">{num}</span>
-                    <Button variant="ghost" size="icon" onClick={() => removeFromBlacklist(num)}><Trash2 className="w-3 h-3 text-destructive" /></Button>
-                  </div>
-                ))}
+            <div className="mt-4 space-y-3">
+              <p className="text-sm font-medium">Salem Blacklist</p>
+              <div className="flex gap-2">
+                <Input placeholder="Enter phone number" value={newBlacklistNumber} onChange={e => setNewBlacklistNumber(e.target.value)} />
+                <Button size="sm" onClick={addToBlacklist}><Plus className="w-4 h-4" /></Button>
               </div>
-            )}
+              {blacklist.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No blacklisted numbers</p>
+              ) : (
+                <div className="space-y-1">
+                  {blacklist.map(num => (
+                    <div key={num} className="flex items-center justify-between text-sm p-2 rounded border">
+                      <span className="font-mono">{num}</span>
+                      <Button variant="ghost" size="icon" onClick={() => removeFromBlacklist(num)}><Trash2 className="w-3 h-3 text-destructive" /></Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -503,6 +421,34 @@ const AdminDashboard = () => {
             <Button onClick={() => { navigator.clipboard.writeText(generatedCode!); toast.success('Copied!'); }} className="w-full">
               <Copy className="w-4 h-4 mr-2" /> Copy Code
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Failed Messages Modal */}
+      <Dialog open={failedModalOpen} onOpenChange={setFailedModalOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <div className="flex items-center justify-between">
+              <DialogTitle>Failed Messages Today ({failedMessages.length})</DialogTitle>
+              <Button onClick={retryAllFailed} disabled={retryingAll} size="sm" className="mr-6">
+                {retryingAll ? <Loader2 className="animate-spin mr-1 w-4 h-4" /> : <RefreshCw className="w-4 h-4 mr-1" />}
+                Retry All
+              </Button>
+            </div>
+          </DialogHeader>
+          <div className="max-h-[400px] overflow-y-auto space-y-2 mt-2">
+            {failedMessages.length === 0 ? (
+              <p className="text-muted-foreground text-sm">No failed messages</p>
+            ) : (
+              failedMessages.map(m => (
+                <div key={m.id} className="text-xs p-3 rounded border bg-destructive/5">
+                  <p className="font-medium">{m.agent_name}</p>
+                  <p className="text-muted-foreground">{m.number_used} • {toUAETime(m.sent_at)}</p>
+                  <p className="mt-1 text-foreground/70 line-clamp-2">{m.message_text}</p>
+                </div>
+              ))
+            )}
           </div>
         </DialogContent>
       </Dialog>
