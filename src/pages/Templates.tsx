@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Star, Loader2 } from 'lucide-react';
+import { toFriendly, toRaw } from '@/lib/templateUtils';
 
 const Templates = () => {
   const { user } = useAuth();
@@ -39,7 +40,7 @@ const Templates = () => {
   const openEdit = (t: any) => {
     setEditingId(t.id);
     setTemplateName(t.template_name);
-    setTemplateBody(t.body);
+    setTemplateBody(toFriendly(t.body));
     setDialogOpen(true);
   };
 
@@ -52,14 +53,14 @@ const Templates = () => {
     if (editingId) {
       const { error } = await supabase.from('message_templates').update({
         template_name: templateName,
-        body: templateBody,
+        body: toRaw(templateBody),
       }).eq('id', editingId);
       if (error) { console.error('[updateTemplate]', error); toast.error('Failed to update template'); }
       else toast.success('Template updated');
     } else {
       const { error } = await supabase.from('message_templates').insert({
         template_name: templateName,
-        body: templateBody,
+        body: toRaw(templateBody),
         created_by: user!.id,
       });
       if (error) { console.error('[createTemplate]', error); toast.error('Failed to create template'); }
@@ -96,7 +97,7 @@ const Templates = () => {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            Use placeholders: <code className="bg-muted px-1 rounded">{'{{owner_name}}'}</code>, <code className="bg-muted px-1 rounded">{'{{building_name}}'}</code>, <code className="bg-muted px-1 rounded">{'{{unit_number}}'}</code>, <code className="bg-muted px-1 rounded">{'{{agent_first_name}}'}</code>. Gemini will make very slight word variations (e.g. "Hi" → "Hello") to keep messages natural.
+            Use placeholders: <code className="bg-muted px-1 rounded">[Owner Name]</code>, <code className="bg-muted px-1 rounded">[Building Name]</code>, <code className="bg-muted px-1 rounded">[Unit Number]</code>, <code className="bg-muted px-1 rounded">[Agent Name]</code>. Gemini will make very slight word variations (e.g. "Hi" → "Hello") to keep messages natural.
           </p>
           {templates.length === 0 ? (
             <p className="text-muted-foreground text-sm">No templates yet. Create one to get started.</p>
@@ -114,7 +115,7 @@ const Templates = () => {
                 {templates.map(t => (
                   <TableRow key={t.id}>
                     <TableCell className="font-medium">{t.template_name}</TableCell>
-                    <TableCell className="max-w-[300px] text-sm truncate">{t.body}</TableCell>
+                    <TableCell className="max-w-[300px] text-sm truncate">{toFriendly(t.body)}</TableCell>
                     <TableCell>
                       {t.is_default ? (
                         <Badge><Star className="w-3 h-3 mr-1" /> Default</Badge>
@@ -150,7 +151,7 @@ const Templates = () => {
             </div>
             <div>
               <label className="text-sm font-medium">Message Body</label>
-              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi {{owner_name}}, I'm {{agent_first_name}} from EVA..." rows={6} className="mt-1" />
+              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi [Owner Name], I'm [Agent Name] from EVA..." rows={6} className="mt-1" />
             </div>
             <Button onClick={handleSave} disabled={saving} className="w-full">
               {saving ? <Loader2 className="animate-spin mr-2" /> : null}

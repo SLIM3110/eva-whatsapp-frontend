@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { getTodayStartUTC, toUAETime } from '@/lib/uaeTime';
+import { toFriendly, toRaw } from '@/lib/templateUtils';
 import {
   MessageSquare, Clock, Wifi, WifiOff, FileText, Plus, Edit2, Trash2, Loader2, QrCode, Pause, Play, AlertCircle
 } from 'lucide-react';
@@ -235,7 +236,7 @@ const AgentDashboard = () => {
     if (!newTemplate.name || !newTemplate.body) return;
     const { error } = await supabase.from('message_templates').insert({
       template_name: newTemplate.name,
-      body: newTemplate.body,
+      body: toRaw(newTemplate.body),
       created_by: user!.id,
     });
     if (error) toast.error('Failed to save template');
@@ -251,7 +252,7 @@ const AgentDashboard = () => {
     if (!editTemplate) return;
     const { error } = await supabase.from('message_templates').update({
       template_name: editTemplate.template_name,
-      body: editTemplate.body,
+      body: toRaw(editTemplate.body),
     }).eq('id', editTemplate.id);
     if (error) toast.error('Failed to update template');
     else {
@@ -442,9 +443,9 @@ const AgentDashboard = () => {
               <DialogHeader><DialogTitle>Create Template</DialogTitle></DialogHeader>
               <div className="space-y-4">
                 <Input placeholder="Template name" value={newTemplate.name} onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })} />
-                <Textarea placeholder="Template body" rows={5} value={newTemplate.body} onChange={(e) => setNewTemplate({ ...newTemplate, body: e.target.value })} />
+                <Textarea placeholder="Hi [Owner Name], I'm [Agent Name] from EVA..." rows={5} value={newTemplate.body} onChange={(e) => setNewTemplate({ ...newTemplate, body: e.target.value })} />
                 <p className="text-xs text-muted-foreground">
-                  Variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
+                  Placeholders: [Owner Name], [Agent Name], [Building Name], [Unit Number]
                 </p>
               </div>
               <DialogFooter><Button onClick={saveTemplate}>Save Template</Button></DialogFooter>
@@ -460,10 +461,10 @@ const AgentDashboard = () => {
                 <div key={t.id} className="flex items-start justify-between p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors">
                   <div className="flex-1">
                     <p className="font-medium text-sm">{t.template_name} {t.is_default && <Badge variant="secondary" className="ml-2 text-xs">Default</Badge>}</p>
-                    <p className="text-sm text-muted-foreground mt-1">{t.body.slice(0, 80)}{t.body.length > 80 ? '...' : ''}</p>
+                    <p className="text-sm text-muted-foreground mt-1">{toFriendly(t.body).slice(0, 80)}{toFriendly(t.body).length > 80 ? '...' : ''}</p>
                   </div>
                   <div className="flex gap-1 ml-4">
-                    <Button variant="ghost" size="icon" onClick={() => { setEditTemplate(t); setEditDialogOpen(true); }}><Edit2 className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => { setEditTemplate({ ...t, body: toFriendly(t.body) }); setEditDialogOpen(true); }}><Edit2 className="w-4 h-4" /></Button>
                     {!t.is_default && <Button variant="ghost" size="icon" onClick={() => deleteTemplate(t.id, t.is_default)}><Trash2 className="w-4 h-4 text-destructive" /></Button>}
                   </div>
                 </div>
@@ -482,7 +483,7 @@ const AgentDashboard = () => {
               <Input value={editTemplate.template_name} onChange={(e) => setEditTemplate({ ...editTemplate, template_name: e.target.value })} />
               <Textarea rows={5} value={editTemplate.body} onChange={(e) => setEditTemplate({ ...editTemplate, body: e.target.value })} />
               <p className="text-xs text-muted-foreground">
-                Variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
+                Placeholders: [Owner Name], [Agent Name], [Building Name], [Unit Number]
               </p>
             </div>
           )}

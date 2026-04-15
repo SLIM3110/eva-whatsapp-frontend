@@ -11,30 +11,52 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { toUAETime } from '@/lib/uaeTime';
 import { Upload, Loader2, Eye, ArrowLeft, X, RefreshCw } from 'lucide-react';
 
-const PHONE_KEYWORDS = ['mobile', 'phone', 'number', 'tel', 'contact', 'whatsapp', 'cell', 'mob'];
-const PHONE_EXACT_NORMALIZED = ['mobile1','mobile2','mobile3','mobile_1','mobile_2','mobile_3','mobile1','mobile2','mobile3'];
+// ── Phone number utilities ────────────────────────────────────────────────────
 
-const isPhoneColumn = (header: string) => {
-  const h = header.toLowerCase().replace(/[\s_]/g, '');
-  if (PHONE_EXACT_NORMALIZED.includes(h)) return true;
+const PHONE_KEYWORDS = ['mobile', 'phone', 'number', 'tel', 'contact', 'whatsapp', 'cell', 'mob'];
+
+const isPhoneColumn = (header: string): boolean => {
+  const normalized = header.toLowerCase().replace(/[\s_\-]/g, '');
+  // exact normalized matches first
+  const exactMatches = ['mobile1','mobile2','mobile3','phone1','phone2','phone3'];
+  if (exactMatches.includes(normalized)) return true;
   return PHONE_KEYWORDS.some(kw => header.toLowerCase().includes(kw));
 };
 
+/** Clean a phone number to a UAE numeric string, or return null if invalid */
 const cleanPhone = (raw: string): string | null => {
   if (!raw) return null;
-  let num = String(raw).replace(/[\s\-\(\)\+]/g, '');
+  // Remove spaces, dashes, brackets, dots, plus signs
+  let num = String(raw).replace(/[\s\-\(\)\.\+]/g, '');
+  // Must be all digits after cleaning
   if (!/^\d+$/.test(num)) return null;
-  if (num.startsWith('0')) num = '971' + num.slice(1);
-  if (num.startsWith('5') && num.length === 9) num = '971' + num;
-  return num.length >= 10 ? num : null;
+  // 00971XXXXXXXXX → 971XXXXXXXXX
+  if (num.startsWith('00971')) num = '971' + num.slice(5);
+  // 0XXXXXXXXX → 971XXXXXXXXX
+  else if (num.startsWith('0')) num = '971' + num.slice(1);
+  // 5XXXXXXXX (9 digits) → 971XXXXXXXX
+  else if (num.startsWith('5') && num.length === 9) num = '971' + num;
+  // 971... keep as is
+  // Validate length: must be 9–12 digits
+  if (num.length < 9 || num.length > 12) return null;
+  return num;
 };
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type ParsedRow = { owner_name: string; building_name: string; unit_number: string; phone: string };
-type ColumnMapping = { phoneColumns: string[]; nameColumn: string | null; buildingColumn: string | null };
+type ColumnMapping = {
+  phoneColumns: string[];
+  nameColumn: string | null;
+  buildingColumn: string | null;
+};
+
+// ── File parser ───────────────────────────────────────────────────────────────
 
 const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping: ColumnMapping }> => {
   const ext = file.name.split('.').pop()?.toLowerCase();
@@ -53,7 +75,6 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
       Object.fromEntries(rawHeaders.map(h => [h, String(row[h] ?? '').trim()]))
     );
   } else {
-    // CSV
     const text = await file.text();
     const result = Papa.parse<Record<string, string>>(text, {
       header: true,
@@ -66,30 +87,30 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   }
 
   const headers = rawHeaders.map(h => h.toLowerCase());
-
   const phoneColIndexes = rawHeaders.map((h, i) => isPhoneColumn(h) ? i : -1).filter(i => i >= 0);
+
   if (phoneColIndexes.length === 0) {
     throw new Error(
       'No phone number columns detected. Your file must have at least one column with mobile, phone, or number in the header.'
     );
   }
 
-  const nameColIdx = headers.findIndex(h => h.includes('name') || h.includes('owner'));
+  const nameColIdx     = headers.findIndex(h => h.includes('name') || h.includes('owner'));
   const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
-  const unitColIdx = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
+  const unitColIdx     = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
 
   const mapping: ColumnMapping = {
-    phoneColumns: phoneColIndexes.map(i => rawHeaders[i]),
-    nameColumn: nameColIdx >= 0 ? rawHeaders[nameColIdx] : null,
+    phoneColumns:   phoneColIndexes.map(i => rawHeaders[i]),
+    nameColumn:     nameColIdx >= 0     ? rawHeaders[nameColIdx]     : null,
     buildingColumn: buildingColIdx >= 0 ? rawHeaders[buildingColIdx] : null,
   };
 
   const contacts: ParsedRow[] = [];
   for (const row of data) {
-    const vals = rawHeaders.map(h => (row[h] || '').trim());
-    const ownerName = nameColIdx >= 0 ? (vals[nameColIdx] || 'Unknown') : 'Unknown';
-    const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '') : '';
-    const unitNumber = unitColIdx >= 0 ? (vals[unitColIdx] || '') : '';
+    const vals      = rawHeaders.map(h => (row[h] || '').trim());
+    const ownerName    = nameColIdx >= 0     ? (vals[nameColIdx]     || 'Unknown') : 'Unknown';
+    const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '')        : '';
+    const unitNumber   = unitColIdx >= 0     ? (vals[unitColIdx]     || '')        : '';
 
     for (const idx of phoneColIndexes) {
       const cleaned = cleanPhone(vals[idx] || '');
@@ -102,59 +123,107 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   return { rows: contacts, mapping };
 };
 
-const getBatchStatus = (b: any): { label: string; variant: string } => {
-  if (b.cancelledCount > 0 && b.pending_count === 0 && b.sent_count === 0) return { label: 'Cancelled', variant: 'secondary' };
-  if (b.sent_count >= b.total_contacts && b.total_contacts > 0) return { label: 'Completed', variant: 'default' };
-  if (b.pending_count > 0) return { label: 'Active', variant: 'default' };
-  return { label: 'Completed', variant: 'default' };
+// ── Gemini personalisation ────────────────────────────────────────────────────
+
+const personaliseWithGemini = async (message: string, geminiKey: string): Promise<string> => {
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `You are personalising a WhatsApp message for a real estate agent. Make very slight natural word variations only — for example change Hi to Hello or swap word order slightly. Change no more than 3 words total. Keep all placeholders exactly as they are including the curly braces. Keep it under 60 words. Return only the message text with no explanation. Message: ${message}`,
+            }],
+          }],
+        }),
+      }
+    );
+    if (!res.ok) return message;
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    return text || message;
+  } catch {
+    return message;
+  }
 };
+
+// ── Batch status helper ───────────────────────────────────────────────────────
+
+const getBatchStatus = (b: any): 'Active' | 'Completed' | 'Cancelled' => {
+  if (b.pending_count === 0 && b.sent_count === 0) return 'Cancelled';
+  if (b.sent_count >= b.total_contacts && b.total_contacts > 0) return 'Completed';
+  if (b.pending_count > 0) return 'Active';
+  return 'Completed';
+};
+
+const statusBadgeClass: Record<string, string> = {
+  Active:    'bg-green-600 text-white',
+  Completed: 'bg-blue-600 text-white',
+  Cancelled: 'bg-gray-500 text-white',
+};
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 const UnitCollector = () => {
   const { user, profile } = useAuth();
-  const [batchName, setBatchName] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [fileMapping, setFileMapping] = useState<ColumnMapping | null>(null);
+
+  // Upload form
+  const [batchName, setBatchName]           = useState('');
+  const [file, setFile]                     = useState<File | null>(null);
+  const [fileMapping, setFileMapping]       = useState<ColumnMapping | null>(null);
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
-  const [templates, setTemplates] = useState<any[]>([]);
+  const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [agents, setAgents] = useState<any[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [batches, setBatches] = useState<any[]>([]);
-  const [viewingBatch, setViewingBatch] = useState<string | null>(null);
-  const [contacts, setContacts] = useState<any[]>([]);
-  const [filterStatus, setFilterStatus] = useState('');
-  const [filterAgent, setFilterAgent] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
-  const [cancelBatchId, setCancelBatchId] = useState<string | null>(null);
+  const [agents, setAgents]                 = useState<any[]>([]);
+  const [uploading, setUploading]           = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [parsedRows, setParsedRows]         = useState<ParsedRow[] | null>(null);
+  const [parseError, setParseError]         = useState<string | null>(null);
+
+  // Batches
+  const [batches, setBatches]               = useState<any[]>([]);
+  const [loading, setLoading]               = useState(true);
+  const [cancelBatchId, setCancelBatchId]   = useState<string | null>(null);
   const [cancellingBatch, setCancellingBatch] = useState(false);
-  const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
+
+  // Contact detail view
+  const [viewingBatch, setViewingBatch]     = useState<string | null>(null);
+  const [contacts, setContacts]             = useState<any[]>([]);
+  const [filterStatus, setFilterStatus]     = useState('');
+  const [filterAgent, setFilterAgent]       = useState('');
   const [loadingContacts, setLoadingContacts] = useState(false);
+
+  // Message preview / edit modal
+  const [previewContact, setPreviewContact] = useState<any>(null);
+  const [previewMessage, setPreviewMessage] = useState('');
+  const [savingPreview, setSavingPreview]   = useState(false);
 
   const isAdmin = profile?.role === 'super_admin' || profile?.role === 'admin';
 
+  // ── Fetch ─────────────────────────────────────────────────────
+
   const fetchData = useCallback(async () => {
     if (!user) return;
-    const promises: any[] = [
+    const [templatesRes, batchesRes, allProfilesRes] = await Promise.all([
       supabase.from('message_templates').select('*'),
       isAdmin
         ? supabase.from('batches').select('*').order('upload_date', { ascending: false })
         : supabase.from('batches').select('*').eq('uploaded_by', user.id).order('upload_date', { ascending: false }),
       supabase.from('profiles').select('id, first_name, last_name, role'),
-    ];
+    ]);
 
-    const [templatesRes, batchesRes, allProfilesRes] = await Promise.all(promises);
     setTemplates(templatesRes.data || []);
     const allProfiles = allProfilesRes.data || [];
     setAgents(allProfiles.filter((p: any) => p.role === 'agent'));
     const profileMap = Object.fromEntries(allProfiles.map((p: any) => [p.id, p]));
 
     const rawBatches = batchesRes.data || [];
+    const batchIds   = rawBatches.map((b: any) => b.id);
 
-    // Fetch failed + cancelled counts per batch
-    const batchIds = rawBatches.map((b: any) => b.id);
-    let failedCounts: Record<string, number> = {};
+    let failedCounts: Record<string, number>    = {};
     let cancelledCounts: Record<string, number> = {};
 
     if (batchIds.length > 0) {
@@ -170,12 +239,15 @@ const UnitCollector = () => {
       });
     }
 
-    setBatches(rawBatches.map((b: any) => ({
+    const mapped = rawBatches.map((b: any) => ({
       ...b,
-      uploader: profileMap[b.uploaded_by] || null,
-      failedCount: failedCounts[b.id] || 0,
+      uploader:       profileMap[b.uploaded_by] || null,
+      failedCount:    failedCounts[b.id]    || 0,
       cancelledCount: cancelledCounts[b.id] || 0,
-    })));
+    }));
+
+    // Hide fully-cancelled batches (pending=0, sent=0)
+    setBatches(mapped.filter((b: any) => b.pending_count > 0 || b.sent_count > 0));
 
     const defaultTpl = templatesRes.data?.find((t: any) => t.is_default);
     if (defaultTpl) setSelectedTemplate(defaultTpl.id);
@@ -184,6 +256,8 @@ const UnitCollector = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // ── File handling ─────────────────────────────────────────────
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
@@ -191,9 +265,7 @@ const UnitCollector = () => {
     setFileMappingPreview(false);
     setParsedRows(null);
     setParseError(null);
-
     if (!f) return;
-
     try {
       const { rows, mapping } = await parseFileToRows(f);
       setParsedRows(rows);
@@ -205,25 +277,23 @@ const UnitCollector = () => {
     }
   };
 
-  const substituteTemplate = (template: string, row: ParsedRow, agentName: string) => {
-    return template
-      .replace(/\{\{owner_name\}\}/g, row.owner_name || '')
-      .replace(/\{\{building_name\}\}/g, row.building_name || '')
-      .replace(/\{\{unit_number\}\}/g, row.unit_number || '')
+  // ── Template substitution ─────────────────────────────────────
+
+  const substituteTemplate = (template: string, row: ParsedRow, agentName: string): string =>
+    template
+      .replace(/\{\{owner_name\}\}/g,       row.owner_name    || '')
+      .replace(/\{\{building_name\}\}/g,    row.building_name || '')
+      .replace(/\{\{unit_number\}\}/g,      row.unit_number   || '')
       .replace(/\{\{agent_first_name\}\}/g, agentName);
-  };
+
+  // ── Upload ────────────────────────────────────────────────────
 
   const handleUpload = async () => {
-    if (!batchName || !file || !selectedTemplate) {
-      toast.error('Please fill all required fields');
-      return;
-    }
-    if (parseError) {
-      toast.error('Fix file issues before uploading');
-      return;
-    }
+    if (!batchName || !file || !selectedTemplate) { toast.error('Please fill all required fields'); return; }
+    if (parseError) { toast.error('Fix file issues before uploading'); return; }
 
     setUploading(true);
+    setUploadProgress('');
     try {
       let rows = parsedRows;
       if (!rows) {
@@ -235,54 +305,41 @@ const UnitCollector = () => {
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
 
+      // Fetch Gemini key
       const { data: settings } = await supabase.from('api_settings').select('gemini_api_key').eq('id', 1).single();
+      const geminiKey = settings?.gemini_api_key || '';
 
-      const totalContacts = rows.length;
+      // Create batch record
       const { data: batch, error: batchError } = await supabase.from('batches').insert({
-        batch_name: batchName,
-        uploaded_by: user!.id,
-        total_contacts: totalContacts,
-        pending_count: totalContacts,
+        batch_name:      batchName,
+        uploaded_by:     user!.id,
+        total_contacts:  rows.length,
+        pending_count:   rows.length,
       }).select().single();
       if (batchError) throw batchError;
 
       const agentName = profile?.first_name || '';
+      const contactInserts: any[] = [];
 
-      // Generate template variations
-      const templateVariations: string[] = [template.body];
-      const numVariations = Math.min(5, rows.length);
-      if (settings?.gemini_api_key && rows.length > 0) {
-        for (let v = 1; v < numVariations; v++) {
-          try {
-            await new Promise(r => setTimeout(r, 4500));
-            const geminiRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${settings.gemini_api_key}`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  contents: [{ parts: [{ text: `You are making a very slight variation of a WhatsApp message template to avoid spam detection. Only change 1-2 words maximum — for example swap "Hi" with "Hello", "reaching out" with "getting in touch", etc. Do NOT change any placeholder variables like {{owner_name}} or {{building_name}}. Do NOT change the meaning or structure. Return only the message text.\n\nTemplate: ${template.body}` }] }],
-                }),
-              }
-            );
-            const geminiData = await geminiRes.json();
-            const aiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (aiText) templateVariations.push(aiText.trim());
-          } catch { /* use existing variations */ }
-        }
+      // Personalise each contact's message with Gemini
+      for (let i = 0; i < rows.length; i++) {
+        setUploadProgress(`Generating messages... ${i + 1} of ${rows.length}`);
+        const baseMsg  = substituteTemplate(template.body, rows[i], agentName);
+        const finalMsg = geminiKey ? await personaliseWithGemini(baseMsg, geminiKey) : baseMsg;
+
+        contactInserts.push({
+          uploaded_batch_id: batch.id,
+          owner_name:        rows[i].owner_name,
+          building_name:     rows[i].building_name || batchName,
+          unit_number:       rows[i].unit_number   || '',
+          number_1:          rows[i].phone,
+          number_2:          '',
+          assigned_agent:    user!.id,
+          generated_message: finalMsg,
+        });
       }
 
-      const contactInserts: any[] = rows.map((row, i) => ({
-        uploaded_batch_id: batch.id,
-        owner_name: row.owner_name,
-        building_name: row.building_name || batchName,
-        unit_number: row.unit_number || '',
-        number_1: row.phone,
-        number_2: '',
-        assigned_agent: user!.id,
-        generated_message: substituteTemplate(templateVariations[i % templateVariations.length], row, agentName),
-      }));
-
+      setUploadProgress('Saving contacts...');
       const { error: insertError } = await supabase.from('owner_contacts').insert(contactInserts);
       if (insertError) throw insertError;
 
@@ -292,12 +349,16 @@ const UnitCollector = () => {
       setFileMapping(null);
       setFileMappingPreview(false);
       setParsedRows(null);
+      setUploadProgress('');
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
+      setUploadProgress('');
     }
     setUploading(false);
   };
+
+  // ── Contact detail ────────────────────────────────────────────
 
   const viewContacts = async (batchId: string) => {
     setViewingBatch(batchId);
@@ -314,6 +375,8 @@ const UnitCollector = () => {
     setLoadingContacts(false);
   };
 
+  // ── Batch cancel ──────────────────────────────────────────────
+
   const cancelBatch = async (batchId: string) => {
     setCancellingBatch(true);
     try {
@@ -323,14 +386,17 @@ const UnitCollector = () => {
         .eq('uploaded_batch_id', batchId)
         .eq('message_status', 'pending');
       if (error) throw error;
-      toast.success('Batch cancelled — all pending messages cancelled');
+      // Remove immediately from UI — do not call fetchData
+      setBatches(prev => prev.filter(b => b.id !== batchId));
       setCancelBatchId(null);
-      fetchData();
+      toast.success('Batch cancelled');
     } catch (err: any) {
       toast.error(err.message || 'Failed to cancel batch');
     }
     setCancellingBatch(false);
   };
+
+  // ── Contact actions ───────────────────────────────────────────
 
   const cancelContact = async (id: string) => {
     const { error } = await supabase.from('owner_contacts').update({ message_status: 'cancelled' }).eq('id', id);
@@ -346,6 +412,34 @@ const UnitCollector = () => {
     toast.success('Contact reset to pending');
   };
 
+  // ── Message preview / edit ────────────────────────────────────
+
+  const openPreview = (c: any) => {
+    setPreviewContact(c);
+    setPreviewMessage(c.generated_message || '');
+  };
+
+  const savePreview = async () => {
+    if (!previewContact) return;
+    setSavingPreview(true);
+    const { error } = await supabase
+      .from('owner_contacts')
+      .update({ generated_message: previewMessage })
+      .eq('id', previewContact.id);
+    if (error) {
+      toast.error('Failed to save message');
+    } else {
+      setContacts(prev => prev.map(c =>
+        c.id === previewContact.id ? { ...c, generated_message: previewMessage } : c
+      ));
+      toast.success('Message updated');
+      setPreviewContact(null);
+    }
+    setSavingPreview(false);
+  };
+
+  // ── Helpers ───────────────────────────────────────────────────
+
   const filteredContacts = contacts.filter(c => {
     if (filterStatus && filterStatus !== 'all' && c.message_status !== filterStatus) return false;
     if (filterAgent && filterAgent !== 'all' && c.assigned_agent !== filterAgent) return false;
@@ -354,20 +448,33 @@ const UnitCollector = () => {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'sent': return <Badge className="bg-green-600 text-white">Sent</Badge>;
-      case 'failed': return <Badge variant="destructive">Failed</Badge>;
+      case 'sent':      return <Badge className="bg-green-600 text-white">Sent</Badge>;
+      case 'failed':    return <Badge variant="destructive">Failed</Badge>;
       case 'cancelled': return <Badge className="bg-gray-500 text-white">Cancelled</Badge>;
-      default: return <Badge variant="secondary">Pending</Badge>;
+      default:          return <Badge variant="secondary">Pending</Badge>;
     }
   };
 
-  if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
+  // ── Render guard ──────────────────────────────────────────────
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="animate-spin w-8 h-8 text-primary" />
+    </div>
+  );
+
+  // ── Contact detail view ───────────────────────────────────────
 
   if (viewingBatch) {
     const batch = batches.find(b => b.id === viewingBatch);
+    const isPendingOrEditable = (c: any) => c.message_status === 'pending';
+
     return (
       <div className="space-y-6">
-        <Button variant="ghost" onClick={() => setViewingBatch(null)}><ArrowLeft className="w-4 h-4 mr-2" /> Back to Batches</Button>
+        <Button variant="ghost" onClick={() => { setViewingBatch(null); setFilterStatus(''); setFilterAgent(''); }}>
+          <ArrowLeft className="w-4 h-4 mr-2" /> Back to Batches
+        </Button>
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
             <CardTitle>Contacts — {batch?.batch_name}</CardTitle>
@@ -396,29 +503,38 @@ const UnitCollector = () => {
           <CardContent>
             {loadingContacts ? (
               <div className="flex justify-center py-10"><Loader2 className="animate-spin w-6 h-6 text-primary" /></div>
+            ) : filteredContacts.length === 0 ? (
+              <p className="text-muted-foreground text-sm">No contacts match the current filter.</p>
             ) : (
               <Table>
                 <TableHeader><TableRow>
-                  <TableHead>Owner</TableHead><TableHead>Building</TableHead><TableHead>Number</TableHead>
+                  <TableHead>Owner</TableHead>
+                  <TableHead>Building</TableHead>
+                  <TableHead>Number</TableHead>
                   {isAdmin && <TableHead>Agent</TableHead>}
-                  <TableHead>Message</TableHead><TableHead>Status</TableHead><TableHead>Sent At</TableHead><TableHead></TableHead>
+                  <TableHead>Message</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Sent At</TableHead>
+                  <TableHead></TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {filteredContacts.map(c => (
-                    <TableRow key={c.id}>
+                    <TableRow
+                      key={c.id}
+                      className={`cursor-pointer hover:bg-muted/50 ${isPendingOrEditable(c) || c.message_status === 'sent' ? '' : 'opacity-60'}`}
+                      onClick={() => openPreview(c)}
+                    >
                       <TableCell>{c.owner_name}</TableCell>
                       <TableCell>{c.building_name}</TableCell>
                       <TableCell className="font-mono text-sm">{c.number_1}</TableCell>
                       {isAdmin && <TableCell>{c.agent_profile ? `${c.agent_profile.first_name} ${c.agent_profile.last_name}` : ''}</TableCell>}
-                      <TableCell className="max-w-[200px]">
-                        <button onClick={() => setExpandedMsg(expandedMsg === c.id ? null : c.id)} className="text-left text-sm hover:text-primary">
-                          {expandedMsg === c.id ? c.generated_message : (c.generated_message?.slice(0, 60) + (c.generated_message?.length > 60 ? '...' : ''))}
-                        </button>
+                      <TableCell className="max-w-[180px] text-sm text-muted-foreground truncate">
+                        {c.generated_message?.slice(0, 60)}{(c.generated_message?.length || 0) > 60 ? '…' : ''}
                       </TableCell>
                       <TableCell>{getStatusBadge(c.message_status)}</TableCell>
                       <TableCell className="text-sm">{c.sent_at ? toUAETime(c.sent_at) : ''}</TableCell>
                       <TableCell>
-                        <div className="flex gap-1">
+                        <div className="flex gap-1" onClick={e => e.stopPropagation()}>
                           {c.message_status === 'failed' && (
                             <Button size="sm" variant="outline" onClick={() => retryContact(c.id)}>
                               <RefreshCw className="w-3 h-3 mr-1" /> Retry
@@ -438,31 +554,86 @@ const UnitCollector = () => {
             )}
           </CardContent>
         </Card>
+
+        {/* Message Preview / Edit Modal */}
+        <Dialog open={!!previewContact} onOpenChange={(open) => { if (!open) setPreviewContact(null); }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>
+                {previewContact?.message_status === 'sent'
+                  ? 'Sent Message'
+                  : 'Preview and Edit Message'}
+              </DialogTitle>
+            </DialogHeader>
+
+            {previewContact && (
+              <div className="space-y-4">
+                <div className="text-sm space-y-1">
+                  <p><span className="font-medium">Owner:</span> {previewContact.owner_name}</p>
+                  <p><span className="font-medium">Number:</span> <span className="font-mono">{previewContact.number_1}</span></p>
+                  {previewContact.message_status === 'sent' && previewContact.sent_at && (
+                    <p><span className="font-medium">Sent at:</span> {toUAETime(previewContact.sent_at)}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Textarea
+                    value={previewMessage}
+                    onChange={e => setPreviewMessage(e.target.value)}
+                    rows={7}
+                    readOnly={previewContact.message_status !== 'pending'}
+                    className={previewContact.message_status !== 'pending' ? 'bg-muted resize-none' : ''}
+                  />
+                  {previewContact.message_status === 'pending' && (
+                    <p className="text-xs text-muted-foreground mt-1 text-right">
+                      {previewMessage.length} characters
+                    </p>
+                  )}
+                </div>
+
+                {previewContact.message_status === 'pending' && (
+                  <p className="text-xs text-muted-foreground">
+                    This message will be sent exactly as shown above.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setPreviewContact(null)}>Close</Button>
+              {previewContact?.message_status === 'pending' && (
+                <Button onClick={savePreview} disabled={savingPreview}>
+                  {savingPreview ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
+                  Save Changes
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
 
+  // ── Main batches view ─────────────────────────────────────────
+
   return (
     <div className="space-y-8">
+
       {/* Upload Form */}
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Upload className="w-5 h-5" /> Upload New Batch</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div>
             <label className="text-sm font-medium">Batch Name</label>
-            <Input value={batchName} onChange={(e) => setBatchName(e.target.value)} placeholder="Enter batch name" className="mt-1" />
+            <Input value={batchName} onChange={e => setBatchName(e.target.value)} placeholder="Enter batch name" className="mt-1" />
           </div>
+
           <div>
             <label className="text-sm font-medium">File (CSV or Excel)</label>
-            <Input
-              type="file"
-              accept=".csv,.xlsx,.xls"
-              onChange={handleFileChange}
-              className="mt-1"
-            />
+            <Input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileChange} className="mt-1" />
             <p className="text-xs text-muted-foreground mt-1">
-              Accepts .csv and .xlsx files. Must contain at least one column with mobile, phone, or number in the header.
-              Multiple phone columns (mobile 1, mobile 2, mobile 3) are supported.
+              Accepts .csv and .xlsx. Must have at least one column with mobile, phone, or number in the header.
+              Multiple phone columns are supported — each valid number creates a separate contact.
             </p>
           </div>
 
@@ -470,7 +641,13 @@ const UnitCollector = () => {
           {fileMapping && fileMappingPreview && !parseError && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm space-y-1">
               <p className="font-semibold text-blue-800">Detected column mapping:</p>
-              <p className="text-blue-700">Phone columns: <span className="font-mono">{fileMapping.phoneColumns.join(', ')}</span></p>
+              <p className="text-blue-700">
+                Found <span className="font-semibold">{fileMapping.phoneColumns.length}</span> phone column{fileMapping.phoneColumns.length > 1 ? 's' : ''}:{' '}
+                <span className="font-mono">{fileMapping.phoneColumns.join(', ')}</span>
+                {fileMapping.phoneColumns.length > 1 && (
+                  <span> — will create up to {fileMapping.phoneColumns.length} contacts per row</span>
+                )}
+              </p>
               <p className="text-blue-700">Name column: <span className="font-mono">{fileMapping.nameColumn || 'none detected'}</span></p>
               <p className="text-blue-700">Building column: <span className="font-mono">{fileMapping.buildingColumn || 'none detected'}</span></p>
               {parsedRows && <p className="text-blue-700">Valid contacts found: <span className="font-semibold">{parsedRows.length}</span></p>}
@@ -478,9 +655,7 @@ const UnitCollector = () => {
           )}
 
           {parseError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {parseError}
-            </div>
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{parseError}</div>
           )}
 
           <div>
@@ -488,14 +663,22 @@ const UnitCollector = () => {
             <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
               <SelectTrigger className="mt-1"><SelectValue placeholder="Select template" /></SelectTrigger>
               <SelectContent>
-                {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.template_name}{t.is_default ? ' (Default)' : ''}</SelectItem>)}
+                {templates.map(t => (
+                  <SelectItem key={t.id} value={t.id}>{t.template_name}{t.is_default ? ' (Default)' : ''}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={handleUpload} disabled={uploading || !!parseError} className="w-full sm:w-auto">
-            {uploading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
-            Upload and Generate Messages
-          </Button>
+
+          <div className="space-y-2">
+            <Button onClick={handleUpload} disabled={uploading || !!parseError} className="w-full sm:w-auto">
+              {uploading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
+              Upload and Generate Messages
+            </Button>
+            {uploadProgress && (
+              <p className="text-sm text-muted-foreground animate-pulse">{uploadProgress}</p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -504,7 +687,7 @@ const UnitCollector = () => {
         <CardHeader><CardTitle>{isAdmin ? 'Active Batches' : 'Your Batches'}</CardTitle></CardHeader>
         <CardContent>
           {batches.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No batches uploaded yet</p>
+            <p className="text-muted-foreground text-sm">No active batches</p>
           ) : (
             <div className="overflow-x-auto">
               <Table>
@@ -523,8 +706,8 @@ const UnitCollector = () => {
                 </TableRow></TableHeader>
                 <TableBody>
                   {batches.map(b => {
-                    const bStatus = getBatchStatus(b);
-                    const pct = b.total_contacts > 0 ? (b.sent_count / b.total_contacts) * 100 : 0;
+                    const status = getBatchStatus(b);
+                    const pct    = b.total_contacts > 0 ? (b.sent_count / b.total_contacts) * 100 : 0;
                     return (
                       <TableRow key={b.id}>
                         <TableCell className="font-medium">{b.batch_name}</TableCell>
@@ -542,13 +725,7 @@ const UnitCollector = () => {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge className={
-                            bStatus.label === 'Active' ? 'bg-green-600 text-white' :
-                            bStatus.label === 'Cancelled' ? 'bg-gray-500 text-white' :
-                            'bg-blue-600 text-white'
-                          }>
-                            {bStatus.label}
-                          </Badge>
+                          <Badge className={statusBadgeClass[status]}>{status}</Badge>
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1 flex-wrap">
