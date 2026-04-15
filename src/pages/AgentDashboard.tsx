@@ -11,31 +11,41 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { toast } from 'sonner';
 import { getTodayStartUTC, toUAETime } from '@/lib/uaeTime';
 import {
-  MessageSquare, Clock, Wifi, WifiOff, FileText, Plus, Edit2, Trash2, Loader2, QrCode, Pause, Play
+  MessageSquare, Clock, Wifi, WifiOff, FileText, Plus, Edit2, Trash2, Loader2, QrCode, Pause, Play, AlertCircle
 } from 'lucide-react';
 
 const BACKEND_URL = 'https://api.evaintelligencehub.online';
 
 const AgentDashboard = () => {
   const { user, profile, refreshProfile } = useAuth();
+
+  // Stats
   const [stats, setStats] = useState({ sentToday: 0, pending: 0, templates: 0 });
   const [pendingContacts, setPendingContacts] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
+  const [sendingPaused, setSendingPaused] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // WhatsApp connection
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [preparingQR, setPreparingQR] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
+
+  // UI
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [newTemplate, setNewTemplate] = useState({ name: '', body: '' });
   const [editTemplate, setEditTemplate] = useState<any>(null);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [sendingPaused, setSendingPaused] = useState(false);
-  const [togglingPause, setTogglingPause] = useState(false);
-  const [apiKey, setApiKey] = useState('');
+
   const autoStartedRef = useRef(false);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const isConnected = profile?.whatsapp_session_status === 'connected';
+  const hasInstance = !!(profile?.green_api_instance_id);
+
+  // ── Data fetch ────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     if (!user) return;
     const todayStart = getTodayStartUTC();
@@ -58,28 +68,31 @@ const AgentDashboard = () => {
     setLoading(false);
   }, [user]);
 
-  // Auto-refresh every 30s
+  // 30s auto-refresh
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Auto-start QR on load if disconnected
+  // ── Auto-start QR on load if instance is assigned but not connected ──
   useEffect(() => {
     if (autoStartedRef.current) return;
     if (!user || !profile) return;
-    if (profile.whatsapp_session_status === 'connected') return;
+    if (!hasInstance) return;                              // no instance assigned → skip
+    if (profile.whatsapp_session_status === 'connected') return; // already connected → skip
     autoStartedRef.current = true;
-    // Load settings then auto-start
-    supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single().then(({ data: settings }) => {
-      const url = settings?.whatsapp_backend_url || BACKEND_URL;
-      const key = settings?.whatsapp_api_key || '';
-      setApiKey(key);
-      startSession(url, key);
-    });
+
+    supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single()
+      .then(({ data: settings }) => {
+        const url = settings?.whatsapp_backend_url || BACKEND_URL;
+        const key = settings?.whatsapp_api_key || '';
+        startSession(url, key);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, profile]);
 
+  // ── Session / polling ─────────────────────────────────────────
   const startSession = async (url: string, key: string) => {
     setConnecting(true);
     setQrCode(null);
@@ -108,13 +121,11 @@ const AgentDashboard = () => {
 
       if (data.qrCode) {
         setQrCode(data.qrCode);
-        setPreparingQR(false);
       } else {
         setPreparingQR(true);
       }
-
       startPolling(url, key);
-    } catch (err) {
+    } catch {
       toast.error('Failed to connect to WhatsApp backend');
       setConnecting(false);
       setPreparingQR(false);
@@ -161,13 +172,13 @@ const AgentDashboard = () => {
     }, 3000);
   };
 
+  // Cleanup on unmount
   useEffect(() => () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); }, []);
 
   const requestQR = async () => {
     const { data: settings } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
     const url = settings?.whatsapp_backend_url || BACKEND_URL;
     const key = settings?.whatsapp_api_key || '';
-    setApiKey(key);
     startSession(url, key);
   };
 
@@ -210,6 +221,7 @@ const AgentDashboard = () => {
     setTogglingPause(false);
   };
 
+  // ── Queue actions ─────────────────────────────────────────────
   const cancelContact = async (id: string) => {
     const { error } = await supabase.from('owner_contacts').update({ message_status: 'cancelled' }).eq('id', id);
     if (error) { toast.error('Failed to cancel'); return; }
@@ -218,6 +230,7 @@ const AgentDashboard = () => {
     setStats(prev => ({ ...prev, pending: Math.max(0, prev.pending - 1) }));
   };
 
+  // ── Template actions ──────────────────────────────────────────
   const saveTemplate = async () => {
     if (!newTemplate.name || !newTemplate.body) return;
     const { error } = await supabase.from('message_templates').insert({
@@ -256,15 +269,13 @@ const AgentDashboard = () => {
     else { toast.success('Template deleted'); fetchData(); }
   };
 
-  const isConnected = profile?.whatsapp_session_status === 'connected';
-
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
 
   return (
     <div className="space-y-8">
-      {/* Stats — 4 cards */}
+
+      {/* ── Stats cards ────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* 1. WhatsApp Status */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">WhatsApp Status</CardTitle>
@@ -278,7 +289,6 @@ const AgentDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* 2. Sent Today */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Sent Today</CardTitle>
@@ -289,7 +299,6 @@ const AgentDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* 3. Pending in Queue */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Pending in Queue</CardTitle>
@@ -300,13 +309,12 @@ const AgentDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* 4. Sending Status */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Sending Status</CardTitle>
             <FileText className="w-5 h-5 text-primary" />
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent>
             <div className={`text-2xl font-bold ${sendingPaused ? 'text-yellow-600' : 'text-green-600'}`}>
               {sendingPaused ? 'Paused' : 'Running'}
             </div>
@@ -314,31 +322,33 @@ const AgentDashboard = () => {
         </Card>
       </div>
 
-      {/* WhatsApp Connection + Pause Toggle */}
+      {/* ── WhatsApp Connection ─────────────────────────────────── */}
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><QrCode className="w-5 h-5" /> WhatsApp Connection</CardTitle></CardHeader>
         <CardContent className="flex flex-col items-center gap-4">
-          {isConnected ? (
+
+          {/* No instance assigned */}
+          {!hasInstance ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <AlertCircle className="w-10 h-10 text-muted-foreground" />
+              <p className="text-base font-medium text-muted-foreground">WhatsApp not configured</p>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Your administrator needs to assign a WhatsApp instance to your account before you can connect.
+              </p>
+            </div>
+
+          ) : isConnected ? (
             <>
               <Badge className="bg-green-600 text-white text-lg px-6 py-2">Connected</Badge>
-              {/* Large Pause/Resume Toggle */}
               {sendingPaused ? (
-                <Button
-                  onClick={() => togglePause(false)}
-                  disabled={togglingPause}
-                  size="lg"
-                  className="bg-green-600 hover:bg-green-700 text-white text-base px-8 py-6 h-auto"
-                >
+                <Button onClick={() => togglePause(false)} disabled={togglingPause} size="lg"
+                  className="bg-green-600 hover:bg-green-700 text-white text-base px-8 py-6 h-auto">
                   {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Play className="w-5 h-5 mr-2" />}
                   Sending Paused — click to resume
                 </Button>
               ) : (
-                <Button
-                  onClick={() => togglePause(true)}
-                  disabled={togglingPause}
-                  size="lg"
-                  className="bg-yellow-500 hover:bg-yellow-600 text-white text-base px-8 py-6 h-auto"
-                >
+                <Button onClick={() => togglePause(true)} disabled={togglingPause} size="lg"
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white text-base px-8 py-6 h-auto">
                   {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Pause className="w-5 h-5 mr-2" />}
                   Sending Active — click to pause
                 </Button>
@@ -348,30 +358,30 @@ const AgentDashboard = () => {
               </p>
               <Button variant="destructive" size="sm" onClick={disconnect}>Disconnect</Button>
             </>
+
           ) : connecting && !qrCode && !preparingQR ? (
-            <>
-              <div className="flex flex-col items-center gap-3">
-                <Loader2 className="animate-spin w-10 h-10 text-primary" />
-                <p className="text-base font-medium text-muted-foreground">Connecting your WhatsApp...</p>
-              </div>
-            </>
+            <div className="flex flex-col items-center gap-3 py-4">
+              <Loader2 className="animate-spin w-10 h-10 text-primary" />
+              <p className="text-base font-medium text-muted-foreground">Connecting your WhatsApp...</p>
+            </div>
+
           ) : qrCode ? (
             <>
               <img src={qrCode} alt="WhatsApp QR Code" className="border rounded-lg" style={{ width: 256, height: 256 }} />
-              <p className="text-sm font-medium text-center">Scan this with your WhatsApp to start sending</p>
-              <div className="flex items-center gap-2 text-muted-foreground">
+              <p className="text-sm font-medium text-center">Scan this code with your WhatsApp app to start sending</p>
+              <div className="flex items-center gap-2 text-muted-foreground text-sm">
                 <Loader2 className="animate-spin w-4 h-4" /> Waiting for scan — keep this page open
               </div>
             </>
+
           ) : preparingQR ? (
-            <>
-              <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
-                <div className="flex flex-col items-center gap-2">
-                  <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground text-center px-4">Session initialising — QR code will appear in a few seconds</p>
-                </div>
+            <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground text-center px-4">Session initialising — QR code will appear shortly</p>
               </div>
-            </>
+            </div>
+
           ) : (
             <>
               <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
@@ -386,7 +396,7 @@ const AgentDashboard = () => {
         </CardContent>
       </Card>
 
-      {/* Live Queue — Next 10 Pending */}
+      {/* ── Pending Queue ───────────────────────────────────────── */}
       <Card>
         <CardHeader><CardTitle>Pending Queue (Next 10)</CardTitle></CardHeader>
         <CardContent>
@@ -420,7 +430,7 @@ const AgentDashboard = () => {
         </CardContent>
       </Card>
 
-      {/* Templates */}
+      {/* ── Templates ───────────────────────────────────────────── */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Message Templates</CardTitle>
@@ -434,7 +444,7 @@ const AgentDashboard = () => {
                 <Input placeholder="Template name" value={newTemplate.name} onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })} />
                 <Textarea placeholder="Template body" rows={5} value={newTemplate.body} onChange={(e) => setNewTemplate({ ...newTemplate, body: e.target.value })} />
                 <p className="text-xs text-muted-foreground">
-                  Available variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
+                  Variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
                 </p>
               </div>
               <DialogFooter><Button onClick={saveTemplate}>Save Template</Button></DialogFooter>
@@ -472,13 +482,14 @@ const AgentDashboard = () => {
               <Input value={editTemplate.template_name} onChange={(e) => setEditTemplate({ ...editTemplate, template_name: e.target.value })} />
               <Textarea rows={5} value={editTemplate.body} onChange={(e) => setEditTemplate({ ...editTemplate, body: e.target.value })} />
               <p className="text-xs text-muted-foreground">
-                Available variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
+                Variables: {'{{owner_name}}'}, {'{{agent_first_name}}'}, {'{{building_name}}'}, {'{{unit_number}}'}
               </p>
             </div>
           )}
           <DialogFooter><Button onClick={updateTemplate}>Update Template</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 };

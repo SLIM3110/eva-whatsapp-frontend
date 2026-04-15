@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,12 +9,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { getTodayStartUTC, toUAETime } from '@/lib/uaeTime';
 import { toast } from 'sonner';
-import { MessageSquare, Users, AlertTriangle, Copy, Loader2, UserPlus, Trash2, Plus, Wifi, WifiOff, Pause, Play, RefreshCw } from 'lucide-react';
+import { MessageSquare, Users, AlertTriangle, Copy, Loader2, UserPlus, Trash2, Plus, Wifi, WifiOff, Pause, Play, RefreshCw, QrCode, AlertCircle } from 'lucide-react';
 
 const BACKEND_URL = 'https://api.evaintelligencehub.online';
 
 const AdminDashboard = () => {
-  const { user } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
   const [stats, setStats] = useState({ totalSent: 0, activeAgents: 0, failedToday: 0 });
   const [agents, setAgents] = useState<any[]>([]);
   const [failedMessages, setFailedMessages] = useState<any[]>([]);
@@ -28,6 +28,15 @@ const AdminDashboard = () => {
   const [togglingAgent, setTogglingAgent] = useState<string | null>(null);
   const [togglingAll, setTogglingAll] = useState(false);
   const [retryingAll, setRetryingAll] = useState(false);
+
+  // WhatsApp connection (admin's own session)
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [preparingQR, setPreparingQR] = useState(false);
+  const [sendingPaused, setSendingPaused] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
+  const autoStartedRef = useRef(false);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const getSettings = async () => {
     const { data } = await supabase.from('api_settings').select('whatsapp_backend_url, whatsapp_api_key').eq('id', 1).single();
@@ -100,6 +109,123 @@ const AdminDashboard = () => {
     const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  // Auto-start own WA session if instance assigned and not connected
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    if (!user || !profile) return;
+    if (!profile.green_api_instance_id) return;
+    if (profile.whatsapp_session_status === 'connected') return;
+    autoStartedRef.current = true;
+    getSettings().then(({ url, key }) => startSession(url, key));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, profile]);
+
+  // Cleanup poll on unmount
+  useEffect(() => () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); }, []);
+
+  const startSession = async (url: string, key: string) => {
+    setConnecting(true);
+    setQrCode(null);
+    setPreparingQR(false);
+    try {
+      const res = await fetch(`${url}/api/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId: user?.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        toast.error(`WhatsApp backend error: ${data.message || `HTTP ${res.status}`}`);
+        setConnecting(false);
+        return;
+      }
+      if (data.status === 'already_connected') {
+        setConnecting(false);
+        await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
+        await refreshProfile();
+        return;
+      }
+      if (data.qrCode) { setQrCode(data.qrCode); } else { setPreparingQR(true); }
+      startPolling(url, key);
+    } catch {
+      toast.error('Failed to connect to WhatsApp backend');
+      setConnecting(false);
+      setPreparingQR(false);
+    }
+  };
+
+  const startPolling = (url: string, key: string) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    const startTime = Date.now();
+    const TIMEOUT_MS = 60_000;
+    pollIntervalRef.current = setInterval(async () => {
+      const elapsed = Date.now() - startTime;
+      try {
+        const res = await fetch(`${url}/api/session/status?agentId=${user?.id}`, { headers: { 'x-api-key': key } });
+        const data = await res.json();
+        if (data.status === 'connected') {
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          setQrCode(null); setPreparingQR(false); setConnecting(false);
+          await supabase.from('profiles').update({ whatsapp_session_status: 'connected' }).eq('id', user?.id);
+          await refreshProfile();
+          toast.success('WhatsApp connected!');
+        } else if (data.qrCode) {
+          setQrCode(data.qrCode); setPreparingQR(false);
+        } else if (elapsed >= TIMEOUT_MS) {
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          setQrCode(null); setPreparingQR(false); setConnecting(false);
+          toast.error('Could not generate QR code. Please try again.');
+        }
+      } catch {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        setQrCode(null); setPreparingQR(false); setConnecting(false);
+      }
+    }, 3000);
+  };
+
+  const requestQR = async () => {
+    const { url, key } = await getSettings();
+    startSession(url, key);
+  };
+
+  const disconnectWA = async () => {
+    const { url, key } = await getSettings();
+    try {
+      await fetch(`${url}/api/session/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId: user?.id }),
+      });
+    } catch { /* ignore */ }
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    await supabase.from('profiles').update({ whatsapp_session_status: 'disconnected' }).eq('id', user?.id);
+    await refreshProfile();
+    autoStartedRef.current = false;
+    toast.success('WhatsApp disconnected');
+  };
+
+  const togglePause = async (pause: boolean) => {
+    setTogglingPause(true);
+    try {
+      const { url, key } = await getSettings();
+      const endpoint = pause ? '/api/session/pause' : '/api/session/resume';
+      await fetch(`${url}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ agentId: user?.id }),
+      });
+      await supabase.from('profiles').update({ sending_paused: pause }).eq('id', user?.id);
+      setSendingPaused(pause);
+      toast.success(pause ? 'Sending paused' : 'Sending resumed');
+    } catch {
+      toast.error('Failed to update sending status');
+    }
+    setTogglingPause(false);
+  };
+
+  const isConnected = profile?.whatsapp_session_status === 'connected';
+  const hasInstance = !!(profile?.green_api_instance_id);
 
   const generateCode = async () => {
     setGenerating(true);
@@ -221,6 +347,74 @@ const AdminDashboard = () => {
 
   return (
     <div className="space-y-8">
+
+      {/* ── Own WhatsApp Connection ─────────────────────────────── */}
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2"><QrCode className="w-5 h-5" /> My WhatsApp Connection</CardTitle></CardHeader>
+        <CardContent className="flex flex-col items-center gap-4">
+          {!hasInstance ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <AlertCircle className="w-10 h-10 text-muted-foreground" />
+              <p className="text-base font-medium text-muted-foreground">WhatsApp not configured</p>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                A WhatsApp instance needs to be assigned to your account before you can connect. Go to User Management to assign one.
+              </p>
+            </div>
+          ) : isConnected ? (
+            <>
+              <Badge className="bg-green-600 text-white text-lg px-6 py-2">Connected</Badge>
+              {sendingPaused ? (
+                <Button onClick={() => togglePause(false)} disabled={togglingPause} size="lg"
+                  className="bg-green-600 hover:bg-green-700 text-white text-base px-8 py-6 h-auto">
+                  {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Play className="w-5 h-5 mr-2" />}
+                  Sending Paused — click to resume
+                </Button>
+              ) : (
+                <Button onClick={() => togglePause(true)} disabled={togglingPause} size="lg"
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white text-base px-8 py-6 h-auto">
+                  {togglingPause ? <Loader2 className="animate-spin mr-2 w-5 h-5" /> : <Pause className="w-5 h-5 mr-2" />}
+                  Sending Active — click to pause
+                </Button>
+              )}
+              <p className="text-sm text-muted-foreground text-center">
+                Your WhatsApp is active. Messages send automatically 9am to 7pm.
+              </p>
+              <Button variant="destructive" size="sm" onClick={disconnectWA}>Disconnect</Button>
+            </>
+          ) : connecting && !qrCode && !preparingQR ? (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <Loader2 className="animate-spin w-10 h-10 text-primary" />
+              <p className="text-base font-medium text-muted-foreground">Connecting your WhatsApp...</p>
+            </div>
+          ) : qrCode ? (
+            <>
+              <img src={qrCode} alt="WhatsApp QR Code" className="border rounded-lg" style={{ width: 256, height: 256 }} />
+              <p className="text-sm font-medium text-center">Scan this code with your WhatsApp app to start sending</p>
+              <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                <Loader2 className="animate-spin w-4 h-4" /> Waiting for scan — keep this page open
+              </div>
+            </>
+          ) : preparingQR ? (
+            <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="animate-spin w-6 h-6 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground text-center px-4">Session initialising — QR code will appear shortly</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="bg-muted rounded-lg flex items-center justify-center border-2 border-dashed" style={{ width: 256, height: 256 }}>
+                <p className="text-sm text-muted-foreground text-center px-4">Scan this code with your WhatsApp to connect</p>
+              </div>
+              <Button onClick={requestQR} disabled={connecting}>
+                {connecting ? <Loader2 className="animate-spin mr-2" /> : null}
+                Request QR Code
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>

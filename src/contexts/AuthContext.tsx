@@ -10,6 +10,10 @@ type Profile = {
   role: 'super_admin' | 'admin' | 'agent';
   is_active: boolean;
   whatsapp_session_status: string;
+  sending_paused: boolean;
+  green_api_instance_id: string | null;
+  green_api_token: string | null;
+  green_api_url: string | null;
 };
 
 type AuthContextType = {
