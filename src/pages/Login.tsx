@@ -132,7 +132,7 @@ const Login = () => {
           </DialogHeader>
           {resetSent ? (
             <p className="text-sm text-center text-green-600 py-4">
-              Password reset link sent. Check your email.
+              Password reset email sent. Check your inbox.
             </p>
           ) : (
             <form onSubmit={handleForgotPassword} className="space-y-4 mt-2">

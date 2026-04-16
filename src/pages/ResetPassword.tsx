@@ -8,27 +8,49 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 
-// NOTE: https://app.evaintelligencehub.online/reset-password must be added to
-// Supabase Authentication > URL Configuration > Redirect URLs for this page to
-// receive the recovery token from the emailed link.
+// IMPORTANT — Supabase dashboard setup required:
+//   1. Authentication > URL Configuration > Site URL:
+//      https://app.evaintelligencehub.online
+//   2. Authentication > URL Configuration > Redirect URLs:
+//      https://app.evaintelligencehub.online/reset-password
+// Without these settings the reset email will point to the wrong URL.
 
 const ResetPassword = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  // Supabase fires PASSWORD_RECOVERY once it exchanges the hash token for a session.
   const [sessionReady, setSessionReady] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') {
+    let isMounted = true;
+
+    // 1. Register the PASSWORD_RECOVERY listener FIRST so we never miss the event.
+    //    With Supabase v2 PKCE flow the client exchanges the ?code= param asynchronously;
+    //    the event fires once that exchange completes.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      if (event === 'PASSWORD_RECOVERY' && session) {
         setSessionReady(true);
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    // 2. Immediately call getSession() as well.
+    //    If the PKCE code exchange already finished before this component mounted
+    //    (i.e. the PASSWORD_RECOVERY event fired before the listener above was
+    //    registered), the session will already be stored and getSession() returns it.
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
+      if (session) {
+        setSessionReady(true);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [navigate]);
 
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,11 +66,13 @@ const ResetPassword = () => {
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) {
       toast.error(error.message);
-    } else {
-      toast.success('Password updated successfully.');
-      setTimeout(() => navigate('/login'), 2000);
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+    toast.success('Password updated successfully.');
+    // Sign out the recovery session so AuthRoute on /login doesn't redirect to dashboard.
+    await supabase.auth.signOut();
+    setTimeout(() => navigate('/login'), 2000);
   };
 
   if (!sessionReady) {
