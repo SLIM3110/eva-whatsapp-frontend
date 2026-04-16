@@ -12,10 +12,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { toUAETime } from '@/lib/uaeTime';
-import { Loader2, UserPlus, Copy, Eye, EyeOff, Server } from 'lucide-react';
+import { Loader2, UserPlus, Copy, Eye, EyeOff, Server, Trash2 } from 'lucide-react';
 
 const UserManagement = () => {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  const isSuperAdmin = profile?.role === 'super_admin';
   const [users, setUsers] = useState<any[]>([]);
   const [codes, setCodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +30,10 @@ const UserManagement = () => {
   const [instanceUrl, setInstanceUrl] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [savingInstance, setSavingInstance] = useState(false);
+
+  // Delete account
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(async () => {
     const [usersRes, codesRes] = await Promise.all([
@@ -119,6 +124,40 @@ const UserManagement = () => {
     setSavingInstance(false);
   };
 
+  const deleteAccount = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      // 1. Cancel all pending contacts for this agent
+      await supabase
+        .from('owner_contacts')
+        .update({ message_status: 'cancelled' })
+        .eq('assigned_agent', deleteTarget.id)
+        .eq('message_status', 'pending');
+
+      // 2. Delete the profile row
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', deleteTarget.id);
+      if (profileError) throw new Error(profileError.message);
+
+      // 3. Remove from Supabase auth
+      const { error: authError } = await supabase.auth.admin.deleteUser(deleteTarget.id);
+      if (authError) throw new Error(authError.message);
+
+      // 4. Remove from UI immediately
+      setUsers(prev => prev.filter(u => u.id !== deleteTarget.id));
+      setDeleteTarget(null);
+
+      // 5. Success toast
+      toast.success('Account deleted successfully');
+    } catch (err: any) {
+      toast.error(`Failed to delete account: ${err.message}`);
+    }
+    setDeleting(false);
+  };
+
   const roleBadgeColor = (role: string) => {
     if (role === 'super_admin') return 'bg-accent text-accent-foreground';
     if (role === 'admin') return 'bg-primary text-primary-foreground';
@@ -177,9 +216,16 @@ const UserManagement = () => {
                       </Select>
                     </TableCell>
                     <TableCell>
-                      <Button size="sm" variant="outline" onClick={() => openAssignInstance(u)}>
-                        <Server className="w-3 h-3 mr-1" /> Assign Instance
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => openAssignInstance(u)}>
+                          <Server className="w-3 h-3 mr-1" /> Assign Instance
+                        </Button>
+                        {isSuperAdmin && u.id !== user?.id && (
+                          <Button size="sm" variant="destructive" onClick={() => setDeleteTarget(u)}>
+                            <Trash2 className="w-3 h-3 mr-1" /> Delete
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -225,6 +271,30 @@ const UserManagement = () => {
             <p className="text-sm text-muted-foreground">Share this code with the user to activate their account</p>
             <Button onClick={copyCode} className="w-full"><Copy className="w-4 h-4 mr-2" /> Copy Code</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Account Confirmation Modal */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete Account</DialogTitle>
+          </DialogHeader>
+          {deleteTarget && (
+            <div className="py-2 space-y-3">
+              <p className="text-sm">
+                Delete <span className="font-semibold">{deleteTarget.first_name} {deleteTarget.last_name}</span>'s account?
+                This will permanently remove their profile, cancel all their pending contacts, and cannot be undone.
+              </p>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Button>
+            <Button variant="destructive" onClick={deleteAccount} disabled={deleting}>
+              {deleting ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : <Trash2 className="w-4 h-4 mr-2" />}
+              Delete Account
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
