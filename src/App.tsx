@@ -18,6 +18,7 @@ import SalemEngine from "@/pages/SalemEngine";
 import EmailCampaigns from "@/pages/EmailCampaigns";
 import Analytics from "@/pages/Analytics";
 import NotFound from "@/pages/NotFound";
+import ResetPassword from "@/pages/ResetPassword";
 import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
@@ -54,6 +55,7 @@ const App = () => (
             <Route path="/login" element={<AuthRoute><Login /></AuthRoute>} />
             <Route path="/signup" element={<AuthRoute><Signup /></AuthRoute>} />
             <Route path="/activate" element={<Activate />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/unit-collector" element={<UnitCollector />} />
