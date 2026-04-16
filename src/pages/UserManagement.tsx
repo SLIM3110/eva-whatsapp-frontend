@@ -70,18 +70,36 @@ const UserManagement = () => {
 
   const generateCode = async () => {
     setGenerating(true);
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const { error } = await supabase.from('activation_codes').insert({ code, created_by: user!.id });
-    if (error) {
-      if (error.code === '23505') {
-        const code2 = Math.floor(100000 + Math.random() * 900000).toString();
-        await supabase.from('activation_codes').insert({ code: code2, created_by: user!.id });
-        setGeneratedCode(code2);
-      } else {
-        toast.error('Failed to generate code');
+    const tryInsert = async (): Promise<string | null> => {
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const payload = { code, is_used: false, created_by: user!.id };
+      console.log('[generateCode] Inserting activation code:', payload);
+      const { error } = await supabase.from('activation_codes').insert(payload);
+      if (error) {
+        console.error('[generateCode] Insert error:', error);
+        if (error.code === '23505') {
+          // Collision — retry once with a new code
+          const code2 = Math.floor(100000 + Math.random() * 900000).toString();
+          const payload2 = { code: code2, is_used: false, created_by: user!.id };
+          console.log('[generateCode] Collision, retrying with:', payload2);
+          const { error: error2 } = await supabase.from('activation_codes').insert(payload2);
+          if (error2) {
+            console.error('[generateCode] Retry insert error:', error2);
+            return null;
+          }
+          return code2;
+        }
+        return null;
       }
+      return code;
+    };
+
+    const result = await tryInsert();
+    if (result) {
+      setGeneratedCode(result);
+      console.log('[generateCode] Code saved successfully:', result);
     } else {
-      setGeneratedCode(code);
+      toast.error('Failed to generate code');
     }
     setGenerating(false);
     fetchData();

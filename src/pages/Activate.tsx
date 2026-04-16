@@ -16,45 +16,58 @@ const Activate = () => {
 
   const handleActivate = async () => {
     if (code.length !== 6) return;
+
+    const trimmedCode = code.trim();
+
+    console.log('[Activate] Attempting activation:', {
+      code: trimmedCode,
+      userId: user?.id ?? 'null — no session!',
+    });
+
+    if (!user) {
+      toast.error('Your session has expired — please log in again');
+      navigate('/login');
+      return;
+    }
+
     setLoading(true);
 
-    const { data: codeData, error: fetchError } = await supabase
-      .from('activation_codes')
-      .select('*')
-      .eq('code', code)
-      .eq('is_used', false)
-      .single();
+    // Single atomic RPC call with SECURITY DEFINER — bypasses RLS entirely
+    const { data, error } = await supabase.rpc('activate_account_code', {
+      p_code: trimmedCode,
+    });
 
-    if (fetchError || !codeData) {
-      toast.error('Invalid or already used activation code');
+    console.log('[Activate] RPC result:', { data, error });
+
+    if (error) {
+      console.error('[Activate] RPC error:', error);
+      toast.error('Activation failed — please try again');
       setLoading(false);
       return;
     }
 
-    const { error: updateCodeError } = await supabase
-      .from('activation_codes')
-      .update({ is_used: true, used_by: user?.id, used_at: new Date().toISOString() })
-      .eq('id', codeData.id);
-
-    if (updateCodeError) {
-      toast.error('Failed to activate. Please try again.');
+    if (data === 'unauthenticated') {
+      toast.error('Your session has expired — please log in again');
+      navigate('/login');
       setLoading(false);
       return;
     }
 
-    const { error: updateProfileError } = await supabase
-      .from('profiles')
-      .update({ is_active: true })
-      .eq('id', user?.id);
-
-    if (updateProfileError) {
-      toast.error('Failed to activate profile. Please try again.');
+    if (data === 'invalid') {
+      toast.error('Invalid code — please check and try again');
       setLoading(false);
       return;
     }
 
+    if (data === 'already_used') {
+      toast.error('This code has already been used');
+      setLoading(false);
+      return;
+    }
+
+    // data === 'success'
     await refreshProfile();
-    toast.success('Account activated successfully!');
+    toast.success('Code activated successfully');
     navigate('/');
     setLoading(false);
   };
