@@ -31,8 +31,12 @@ const isPhoneColumn = (header: string): boolean => {
 /** Clean a phone number to a UAE numeric string, or return null if invalid */
 const cleanPhone = (raw: string): string | null => {
   if (!raw) return null;
-  // Remove spaces, dashes, brackets, dots, plus signs
-  let num = String(raw).replace(/[\s\-\(\)\.\+]/g, '');
+  let str = String(raw).trim();
+  // Handle Excel scientific notation e.g. 9.71504046276E+11
+  if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
+    try { str = String(Math.round(Number(str))); } catch { return null; }
+  }
+  let num = str.replace(/[\s\-\(\)\.\+]/g, '');
   // Must be all digits after cleaning
   if (!/^\d+$/.test(num)) return null;
   // 00971XXXXXXXXX → 971XXXXXXXXX
@@ -390,6 +394,7 @@ const UnitCollector = () => {
         .eq('uploaded_batch_id', batchId)
         .eq('message_status', 'pending');
       if (error) throw error;
+      await supabase.from('batches').update({ pending_count: 0 }).eq('id', batchId);
       // Remove immediately from UI — do not call fetchData
       setBatches(prev => prev.filter(b => b.id !== batchId));
       setCancelBatchId(null);
@@ -403,8 +408,13 @@ const UnitCollector = () => {
   // ── Contact actions ───────────────────────────────────────────
 
   const cancelContact = async (id: string) => {
+    const contact = contacts.find(c => c.id === id);
     const { error } = await supabase.from('owner_contacts').update({ message_status: 'cancelled' }).eq('id', id);
     if (error) { toast.error('Failed to cancel'); return; }
+    if (contact?.uploaded_batch_id) {
+      const remaining = contacts.filter(c => c.id !== id && c.message_status === 'pending').length;
+      await supabase.from('batches').update({ pending_count: remaining }).eq('id', contact.uploaded_batch_id);
+    }
     setContacts(prev => prev.map(c => c.id === id ? { ...c, message_status: 'cancelled' } : c));
     toast.success('Contact cancelled');
   };
