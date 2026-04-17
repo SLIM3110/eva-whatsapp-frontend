@@ -18,17 +18,27 @@ import { Upload, Loader2, Eye, ArrowLeft, X, RefreshCw } from 'lucide-react';
 
 // ── Phone number utilities ────────────────────────────────────────────────────
 
-const PHONE_KEYWORDS = ['mobile', 'phone', 'number', 'tel', 'contact', 'whatsapp', 'cell', 'mob'];
-
-const isPhoneColumn = (header: string): boolean => {
-  const normalized = header.toLowerCase().replace(/[\s_\-]/g, '');
-  // exact normalized matches first
-  const exactMatches = ['mobile1','mobile2','mobile3','phone1','phone2','phone3'];
-  if (exactMatches.includes(normalized)) return true;
-  return PHONE_KEYWORDS.some(kw => header.toLowerCase().includes(kw));
+const looksLikePhone = (val: string): boolean => {
+  if (!val) return false;
+  let str = String(val).trim();
+  if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
+    try { str = String(Math.round(Number(str))); } catch { return false; }
+  }
+  const cleaned = str.replace(/[\s\-\(\)\.\+\/]/g, '');
+  const digits = cleaned.startsWith('00') ? cleaned.slice(2) : cleaned;
+  return /^\d{8,15}$/.test(digits);
 };
 
-/** Clean a phone number to a UAE numeric string, or return null if invalid */
+const isPhoneColumn = (header: string, sampleValues: string[]): boolean => {
+  const norm = header.toLowerCase().replace(/[\s_\-]/g, '');
+  const keywords = ['mobile','phone','number','tel','contact','whatsapp','cell','mob','fax','num'];
+  if (keywords.some(kw => norm.includes(kw))) return true;
+  // Fall back to content analysis — if 60%+ of non-empty values look like phone numbers
+  const nonEmpty = sampleValues.filter(v => v?.trim());
+  if (nonEmpty.length === 0) return false;
+  return nonEmpty.filter(looksLikePhone).length / nonEmpty.length >= 0.6;
+};
+
 const cleanPhone = (raw: string): string | null => {
   if (!raw) return null;
   let str = String(raw).trim();
@@ -36,18 +46,15 @@ const cleanPhone = (raw: string): string | null => {
   if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
     try { str = String(Math.round(Number(str))); } catch { return null; }
   }
-  let num = str.replace(/[\s\-\(\)\.\+]/g, '');
-  // Must be all digits after cleaning
+  let num = str.replace(/[\s\-\(\)\.\+\/]/g, '');
+  if (num.startsWith('00')) num = num.slice(2);
   if (!/^\d+$/.test(num)) return null;
-  // 00971XXXXXXXXX → 971XXXXXXXXX
+  // UAE-specific normalisation
   if (num.startsWith('00971')) num = '971' + num.slice(5);
-  // 0XXXXXXXXX → 971XXXXXXXXX
-  else if (num.startsWith('0')) num = '971' + num.slice(1);
-  // 5XXXXXXXX (9 digits) → 971XXXXXXXX
-  else if (num.startsWith('5') && num.length === 9) num = '971' + num;
-  // 971... keep as is
-  // Validate length: must be 9–12 digits
-  if (num.length < 9 || num.length > 12) return null;
+  else if (num.startsWith('0') && num.length === 10) num = '971' + num.slice(1);
+  else if (/^[5-9]\d{8}$/.test(num)) num = '971' + num;
+  // International E.164: 8–15 digits
+  if (num.length < 8 || num.length > 15) return null;
   return num;
 };
 
@@ -91,7 +98,10 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   }
 
   const headers = rawHeaders.map(h => h.toLowerCase());
-  const phoneColIndexes = rawHeaders.map((h, i) => isPhoneColumn(h) ? i : -1).filter(i => i >= 0);
+  const phoneColIndexes = rawHeaders.map((h, i) => {
+    const sampleValues = data.slice(0, 30).map(row => String(row[rawHeaders[i]] ?? ''));
+    return isPhoneColumn(h, sampleValues) ? i : -1;
+  }).filter(i => i >= 0);
 
   if (phoneColIndexes.length === 0) {
     throw new Error(
