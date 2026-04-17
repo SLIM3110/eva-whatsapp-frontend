@@ -13,7 +13,8 @@ import { Plus, Pencil, Trash2, Star, Loader2 } from 'lucide-react';
 import { toFriendly, toRaw } from '@/lib/templateUtils';
 
 const Templates = () => {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
+  const isAdmin = profile?.role === 'super_admin' || profile?.role === 'admin';
   const [templates, setTemplates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -23,10 +24,11 @@ const Templates = () => {
   const [saving, setSaving] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
-    const { data } = await supabase.from('message_templates').select('*').order('created_at', { ascending: false });
+    const query = supabase.from('message_templates').select('*').order('created_at', { ascending: false });
+    const { data } = isAdmin ? await query : await query.eq('created_by', user!.id);
     setTemplates(data || []);
     setLoading(false);
-  }, []);
+  }, [isAdmin, user]);
 
   useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
 

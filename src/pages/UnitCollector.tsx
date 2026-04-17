@@ -208,11 +208,15 @@ const UnitCollector = () => {
   const fetchData = useCallback(async () => {
     if (!user) return;
     const [templatesRes, batchesRes, allProfilesRes] = await Promise.all([
-      supabase.from('message_templates').select('*'),
+      isAdmin
+        ? supabase.from('message_templates').select('*')
+        : supabase.from('message_templates').select('*').eq('created_by', user.id),
       isAdmin
         ? supabase.from('batches').select('*').order('upload_date', { ascending: false })
         : supabase.from('batches').select('*').eq('uploaded_by', user.id).order('upload_date', { ascending: false }),
-      supabase.from('profiles').select('id, first_name, last_name, role'),
+      isAdmin
+        ? supabase.from('profiles').select('id, first_name, last_name, role')
+        : supabase.from('profiles').select('id, first_name, last_name, role').eq('id', user.id),
     ]);
 
     setTemplates(templatesRes.data || []);
