@@ -142,7 +142,7 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
 const personaliseWithGemini = async (message: string, geminiKey: string): Promise<string> => {
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -319,6 +319,13 @@ const UnitCollector = () => {
         rows = r;
       }
       if (!rows || rows.length === 0) { toast.error('File is empty or has no valid phone numbers'); setUploading(false); return; }
+
+      // Deduplicate by phone — keep first occurrence
+      const seen = new Set<string>();
+      const deduped = rows.filter(r => { if (seen.has(r.phone)) return false; seen.add(r.phone); return true; });
+      const dupeCount = rows.length - deduped.length;
+      if (dupeCount > 0) toast.info(`Removed ${dupeCount} duplicate phone number${dupeCount > 1 ? 's' : ''} — each number will only receive one message.`);
+      rows = deduped;
 
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
