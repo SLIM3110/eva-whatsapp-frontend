@@ -148,20 +148,24 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
 
 const personaliseWithGemini = async (message: string, geminiKey: string): Promise<string> => {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `You are personalising a WhatsApp message for a real estate agent. Make natural variations — swap synonyms, reorder phrases, change greetings — so each message feels slightly unique. Do NOT shorten, summarise, or remove any content. Do NOT add or remove any information. Keep all placeholders exactly as they are including the curly braces. Return only the full message text with no explanation. Message: ${message}`,
+              text: `You are personalising a WhatsApp message for a real estate agent. Your job is to make the message feel slightly different for each recipient so it does not look like a mass blast — vary the sentence structure, swap synonyms, reorder a phrase or two, change the greeting style. Keep the full meaning, all facts, and all key points completely intact. Do NOT shorten, summarise, or cut any part of the message. The output must be approximately the same length as the input. Keep all placeholders exactly as they are including the curly braces. Return only the message text with no explanation or commentary. Message: ${message}`,
             }],
           }],
         }),
       }
     );
+    clearTimeout(timeoutId);
     if (!res.ok) return message;
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -169,6 +173,22 @@ const personaliseWithGemini = async (message: string, geminiKey: string): Promis
   } catch {
     return message;
   }
+};
+
+const personaliseAllWithGemini = async (
+  messages: string[],
+  geminiKey: string,
+  onProgress: (done: number, total: number) => void
+): Promise<string[]> => {
+  const CONCURRENCY = 8;
+  const results: string[] = new Array(messages.length);
+  for (let start = 0; start < messages.length; start += CONCURRENCY) {
+    const chunk = messages.slice(start, start + CONCURRENCY);
+    const chunkResults = await Promise.all(chunk.map(msg => personaliseWithGemini(msg, geminiKey)));
+    chunkResults.forEach((r, i) => { results[start + i] = r; });
+    onProgress(Math.min(start + CONCURRENCY, messages.length), messages.length);
+  }
+  return results;
 };
 
 // ── Batch status helper ───────────────────────────────────────────────────────
@@ -351,25 +371,30 @@ const UnitCollector = () => {
       if (batchError) throw batchError;
 
       const agentName = profile?.first_name || '';
-      const contactInserts: any[] = [];
+      const baseMsgs = rows.map(r => substituteTemplate(template.body, r, agentName));
 
-      // Personalise each contact's message with Gemini
-      for (let i = 0; i < rows.length; i++) {
-        setUploadProgress(`Generating messages... ${i + 1} of ${rows.length}`);
-        const baseMsg  = substituteTemplate(template.body, rows[i], agentName);
-        const finalMsg = geminiKey ? await personaliseWithGemini(baseMsg, geminiKey) : baseMsg;
-
-        contactInserts.push({
-          uploaded_batch_id: batch.id,
-          owner_name:        rows[i].owner_name,
-          building_name:     rows[i].building_name || batchName,
-          unit_number:       rows[i].unit_number   || '',
-          number_1:          rows[i].phone,
-          number_2:          '',
-          assigned_agent:    user!.id,
-          generated_message: finalMsg,
-        });
+      let finalMsgs: string[];
+      if (geminiKey) {
+        setUploadProgress(`Generating personalised messages (0 of ${rows.length})...`);
+        finalMsgs = await personaliseAllWithGemini(
+          baseMsgs,
+          geminiKey,
+          (done, total) => setUploadProgress(`Generating personalised messages (${done} of ${total})...`)
+        );
+      } else {
+        finalMsgs = baseMsgs;
       }
+
+      const contactInserts: any[] = rows.map((r, i) => ({
+        uploaded_batch_id: batch.id,
+        owner_name:        r.owner_name,
+        building_name:     r.building_name || batchName,
+        unit_number:       r.unit_number   || '',
+        number_1:          r.phone,
+        number_2:          '',
+        assigned_agent:    user!.id,
+        generated_message: finalMsgs[i],
+      }));
 
       setUploadProgress('Saving contacts...');
       const { error: insertError } = await supabase.from('owner_contacts').insert(contactInserts);
