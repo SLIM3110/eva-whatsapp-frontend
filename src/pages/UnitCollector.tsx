@@ -24,7 +24,7 @@ const looksLikePhone = (val: string): boolean => {
   if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
     try { str = String(Math.round(Number(str))); } catch { return false; }
   }
-  const cleaned = str.replace(/[\s\-\(\)\.\+\/]/g, '');
+  const cleaned = str.replace(/[\s\-\(\)\.\+\/\|]/g, '');
   const digits = cleaned.startsWith('00') ? cleaned.slice(2) : cleaned;
   return /^\d{8,15}$/.test(digits);
 };
@@ -696,6 +696,7 @@ const UnitCollector = () => {
             <Input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileChange} className="mt-1" />
             <p className="text-xs text-muted-foreground mt-1">
               Accepts .csv and .xlsx. Must have at least one column with mobile, phone, or number in the header.
+              UAE local formats (05xxxxxxxx) and international numbers with country code (+44, +1, +966, etc.) are all supported.
               Multiple phone columns are supported — each valid number creates a separate contact.
             </p>
           </div>
