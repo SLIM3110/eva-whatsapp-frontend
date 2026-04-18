@@ -46,11 +46,13 @@ const cleanPhone = (raw: string): string | null => {
   if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
     try { str = String(Math.round(Number(str))); } catch { return null; }
   }
-  let num = str.replace(/[\s\-\(\)\.\+\/]/g, '');
+  let num = str.replace(/[\s\-\(\)\.\+\/\|]/g, '');
   if (num.startsWith('00')) num = num.slice(2);
   if (!/^\d+$/.test(num)) return null;
   // UAE-specific normalisation
   if (num.startsWith('00971')) num = '971' + num.slice(5);
+  // Strip stray leading zero after country code: 9710504576568 → 971504576568
+  else if (/^9710\d{9}$/.test(num)) num = '971' + num.slice(4);
   else if (num.startsWith('0') && num.length === 10) num = '971' + num.slice(1);
   else if (/^[5-9]\d{8}$/.test(num)) num = '971' + num;
   // International E.164: 8–15 digits
@@ -109,7 +111,12 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
     );
   }
 
-  const nameColIdx     = headers.findIndex(h => h.includes('name') || h.includes('owner'));
+  // Prioritise explicit "owner" columns before falling back to any "name" column
+  const nameColIdx = (() => {
+    const ownerIdx = headers.findIndex(h => h.includes('owner'));
+    if (ownerIdx >= 0) return ownerIdx;
+    return headers.findIndex(h => h.includes('name') && !h.includes('building') && !h.includes('project') && !h.includes('tower'));
+  })();
   const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
   const unitColIdx     = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
 
@@ -149,7 +156,7 @@ const personaliseWithGemini = async (message: string, geminiKey: string): Promis
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `You are personalising a WhatsApp message for a real estate agent. Make very slight natural word variations only — for example change Hi to Hello or swap word order slightly. Change no more than 3 words total. Keep all placeholders exactly as they are including the curly braces. Keep it under 60 words. Return only the message text with no explanation. Message: ${message}`,
+              text: `You are personalising a WhatsApp message for a real estate agent. Make natural variations — swap synonyms, reorder phrases, change greetings — so each message feels slightly unique. Do NOT shorten, summarise, or remove any content. Do NOT add or remove any information. Keep all placeholders exactly as they are including the curly braces. Return only the full message text with no explanation. Message: ${message}`,
             }],
           }],
         }),
