@@ -51,15 +51,13 @@ const Analytics = () => {
 
     const since = dateRangeStart(range);
 
-    // Fetch agents scoped to role
-    const agentsQuery = supabase
+    const baseAgentsQ = supabase
       .from('profiles')
       .select('id, first_name, last_name, is_active, admin_id, role')
       .eq('role', 'agent');
-    if (!isSuperAdmin) agentsQuery.eq('admin_id', user.id);
 
     const [agentsRes, adminsRes] = await Promise.all([
-      agentsQuery,
+      isSuperAdmin ? baseAgentsQ : baseAgentsQ.eq('admin_id', user.id),
       isSuperAdmin
         ? supabase.from('profiles').select('id, first_name, last_name').in('role', ['admin', 'super_admin'] as any)
         : Promise.resolve({ data: null }),
