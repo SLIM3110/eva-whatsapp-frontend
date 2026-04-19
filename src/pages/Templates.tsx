@@ -99,7 +99,7 @@ const Templates = () => {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            Use placeholders: <code className="bg-muted px-1 rounded">[Owner Name]</code>, <code className="bg-muted px-1 rounded">[Building Name]</code>, <code className="bg-muted px-1 rounded">[Unit Number]</code>, <code className="bg-muted px-1 rounded">[Agent Name]</code>. Gemini will make very slight word variations (e.g. "Hi" → "Hello") to keep messages natural.
+            Use placeholders: <code className="bg-muted px-1 rounded">[Owner Name]</code>, <code className="bg-muted px-1 rounded">[Building Name]</code>, <code className="bg-muted px-1 rounded">[Unit Number]</code>, <code className="bg-muted px-1 rounded">[Agent Name]</code>. Gemini will rewrite each message with bold, noticeable changes so every recipient gets a genuinely unique version.
           </p>
           {templates.length === 0 ? (
             <p className="text-muted-foreground text-sm">No templates yet. Create one to get started.</p>

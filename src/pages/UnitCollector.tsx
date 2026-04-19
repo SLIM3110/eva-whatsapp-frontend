@@ -157,9 +157,10 @@ const personaliseWithGemini = async (message: string, geminiKey: string): Promis
         signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          generationConfig: { temperature: 1.8 },
           contents: [{
             parts: [{
-              text: `You are personalising a WhatsApp message for a real estate agent. Your job is to make the message feel slightly different for each recipient so it does not look like a mass blast — vary the sentence structure, swap synonyms, reorder a phrase or two, change the greeting style. Keep the full meaning, all facts, and all key points completely intact. Do NOT shorten, summarise, or cut any part of the message. The output must be approximately the same length as the input. Keep all placeholders exactly as they are including the curly braces. Return only the message text with no explanation or commentary. Message: ${message}`,
+              text: `You are rewriting a WhatsApp message for a real estate agent. Each recipient must receive a version that feels genuinely unique — not a minor tweak, but a real rewrite. Make bold, noticeable changes: restructure sentences significantly, use different vocabulary and expressions throughout, change the opening and closing style entirely, vary the flow and rhythm of the message, and rephrase ideas in fresh ways. The goal is that two versions of the same template should not look like the same message at all. Keep the full meaning, all facts, and all key points completely intact. Do NOT shorten, summarise, or cut any part of the message. The output must be approximately the same length as the input. Keep all placeholders exactly as they are (e.g. {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}). Return only the message text with no explanation or commentary. Message: ${message}`,
             }],
           }],
         }),
