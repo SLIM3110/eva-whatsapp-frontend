@@ -30,8 +30,10 @@ const MarketReports = () => {
   const [agentContact, setAgentContact]   = useState('');
   const [csvFile, setCsvFile]             = useState<File | null>(null);
   const [locationNotes, setLocationNotes] = useState('');
-  const [imageFile, setImageFile]         = useState<File | null>(null);
-  const [imagePrompt, setImagePrompt]     = useState('');
+  const [serviceChargePsf, setServiceChargePsf] = useState('');
+  const [agentInstruction, setAgentInstruction] = useState('');
+  const [imageFile, setImageFile]               = useState<File | null>(null);
+  const [imagePrompt, setImagePrompt]           = useState('');
   const [generating, setGenerating]       = useState(false);
   const [successResult, setSuccessResult] = useState<{ report_url: string; report_id: string; expires_at: string } | null>(null);
 
@@ -92,10 +94,12 @@ const MarketReports = () => {
     form.append('agent_name', agentName);
     form.append('agent_contact', agentContact);
     form.append('csv_file', csvFile);
-    if (locationNotes.trim()) form.append('location_notes', locationNotes);
-    if (imageFile)            form.append('image_file', imageFile);
-    if (imagePrompt.trim())   form.append('image_prompt', imagePrompt);
-    if (user)                 form.append('user_id', user.id);
+    if (locationNotes.trim())      form.append('location_notes', locationNotes);
+    if (imageFile)                 form.append('image_file', imageFile);
+    if (imagePrompt.trim())        form.append('image_prompt', imagePrompt);
+    if (serviceChargePsf !== '')   form.append('service_charge_psf', serviceChargePsf);
+    if (agentInstruction.trim())   form.append('agent_instruction', agentInstruction);
+    if (user)                      form.append('agent_id', user.id);
 
     try {
       const res = await fetch('https://api.evaintelligencehub.online/market-reports/generate', {
@@ -216,6 +220,22 @@ const MarketReports = () => {
                 <Input value={agentContact} onChange={e => setAgentContact(e.target.value)} placeholder="Email or phone number" />
               </div>
 
+              {/* Service Charge */}
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Service Charge (AED/sqft/year) — optional</label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={serviceChargePsf}
+                  onChange={e => setServiceChargePsf(e.target.value)}
+                  placeholder="e.g. 18"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter the community's annual service charge per sqft. Used to calculate net yield in the report.
+                </p>
+              </div>
+
               {/* CSV Upload */}
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Property Monitor CSV Export</label>
@@ -238,6 +258,20 @@ const MarketReports = () => {
                   placeholder="e.g. Park-facing units in Phase 3 consistently achieve the strongest prices..."
                   rows={3}
                 />
+              </div>
+
+              {/* Agent Instruction */}
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Additional instructions for Gemini (optional)</label>
+                <Textarea
+                  value={agentInstruction}
+                  onChange={e => setAgentInstruction(e.target.value)}
+                  placeholder="e.g. Mention that Phase 3 is the only phase with direct park access. Highlight that corner units here sell faster than anywhere else in the community."
+                  rows={3}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Tell Gemini anything specific you want included or emphasised in the report narrative.
+                </p>
               </div>
 
               {/* Image Upload */}
