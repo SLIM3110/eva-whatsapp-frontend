@@ -9,6 +9,7 @@ import {
   FileText,
   Settings,
   Users,
+  UsersRound,
   LogOut,
   Menu,
   X,
@@ -35,6 +36,7 @@ const AppLayout = () => {
     { path: '/templates', label: 'Templates', icon: FileText, roles: ['super_admin', 'admin', 'agent'] },
     { path: '/settings', label: 'Settings', icon: Settings, roles: ['super_admin'] },
     { path: '/user-management', label: 'User Management', icon: Users, roles: ['super_admin'] },
+    { path: '/team-management', label: 'Team Management', icon: UsersRound, roles: ['super_admin'] },
   ];
 
   const filteredNav = role

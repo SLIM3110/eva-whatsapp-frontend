@@ -13,6 +13,7 @@ import UnitCollector from "@/pages/UnitCollector";
 import Templates from "@/pages/Templates";
 import SettingsPage from "@/pages/Settings";
 import UserManagement from "@/pages/UserManagement";
+import TeamManagement from "@/pages/TeamManagement";
 import SalemEngine from "@/pages/SalemEngine";
 
 import EmailCampaigns from "@/pages/EmailCampaigns";
@@ -66,6 +67,7 @@ const App = () => (
               <Route path="/analytics" element={<ProtectedRoute roles={['super_admin', 'admin']}><Analytics /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute roles={['super_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="/user-management" element={<ProtectedRoute roles={['super_admin']}><UserManagement /></ProtectedRoute>} />
+              <Route path="/team-management" element={<ProtectedRoute roles={['super_admin']}><TeamManagement /></ProtectedRoute>} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

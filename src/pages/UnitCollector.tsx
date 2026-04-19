@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
@@ -254,8 +255,8 @@ const UnitCollector = () => {
         ? supabase.from('message_templates').select('*')
         : supabase.from('message_templates').select('*').eq('created_by', user.id),
       isAdmin
-        ? supabase.from('batches').select('*').order('upload_date', { ascending: false })
-        : supabase.from('batches').select('*').eq('uploaded_by', user.id).order('upload_date', { ascending: false }),
+        ? supabase.from('batches').select('*, completed_at').order('upload_date', { ascending: false })
+        : supabase.from('batches').select('*, completed_at').eq('uploaded_by', user.id).order('upload_date', { ascending: false }),
       isAdmin
         ? supabase.from('profiles').select('id, first_name, last_name, role')
         : supabase.from('profiles').select('id, first_name, last_name, role').eq('id', user.id),
@@ -747,19 +748,21 @@ const UnitCollector = () => {
         </CardContent>
       </Card>
 
-      {/* Active Batches */}
-      <Card>
-        <CardHeader><CardTitle>{isAdmin ? 'Active Batches' : 'Your Batches'}</CardTitle></CardHeader>
-        <CardContent>
-          {batches.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No active batches</p>
+      {/* Batches — Active / Completed tabs */}
+      {(() => {
+        const activeBatches    = batches.filter(b => b.pending_count > 0);
+        const completedBatches = batches.filter(b => b.pending_count === 0 && b.sent_count > 0);
+
+        const BatchTable = ({ rows, showCompleted }: { rows: any[]; showCompleted: boolean }) => (
+          rows.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No {showCompleted ? 'completed' : 'active'} batches</p>
           ) : (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader><TableRow>
                   <TableHead>Batch Name</TableHead>
                   {isAdmin && <TableHead>Uploaded By</TableHead>}
-                  <TableHead>Date (UAE)</TableHead>
+                  <TableHead>{showCompleted ? 'Completed at' : 'Date (UAE)'}</TableHead>
                   <TableHead>Total</TableHead>
                   <TableHead>Sent</TableHead>
                   <TableHead>Pending</TableHead>
@@ -770,14 +773,18 @@ const UnitCollector = () => {
                   <TableHead></TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
-                  {batches.map(b => {
+                  {rows.map(b => {
                     const status = getBatchStatus(b);
                     const pct    = b.total_contacts > 0 ? (b.sent_count / b.total_contacts) * 100 : 0;
                     return (
                       <TableRow key={b.id}>
                         <TableCell className="font-medium">{b.batch_name}</TableCell>
                         {isAdmin && <TableCell>{b.uploader?.first_name} {b.uploader?.last_name}</TableCell>}
-                        <TableCell className="text-sm">{toUAETime(b.upload_date)}</TableCell>
+                        <TableCell className="text-sm">
+                          {showCompleted
+                            ? (b.completed_at ? toUAETime(b.completed_at) : '—')
+                            : toUAETime(b.upload_date)}
+                        </TableCell>
                         <TableCell>{b.total_contacts}</TableCell>
                         <TableCell className="text-green-600 font-medium">{b.sent_count}</TableCell>
                         <TableCell>{b.pending_count}</TableCell>
@@ -797,7 +804,7 @@ const UnitCollector = () => {
                             <Button variant="ghost" size="sm" onClick={() => viewContacts(b.id)}>
                               <Eye className="w-4 h-4 mr-1" /> View
                             </Button>
-                            {b.pending_count > 0 && (
+                            {!showCompleted && b.pending_count > 0 && (
                               <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelBatchId(b.id)}>
                                 <X className="w-4 h-4 mr-1" /> Cancel
                               </Button>
@@ -810,9 +817,31 @@ const UnitCollector = () => {
                 </TableBody>
               </Table>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          )
+        );
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>{isAdmin ? 'Batches' : 'Your Batches'}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Tabs defaultValue="active">
+                <TabsList className="mb-4">
+                  <TabsTrigger value="active">Active ({activeBatches.length})</TabsTrigger>
+                  <TabsTrigger value="completed">Completed ({completedBatches.length})</TabsTrigger>
+                </TabsList>
+                <TabsContent value="active">
+                  <BatchTable rows={activeBatches} showCompleted={false} />
+                </TabsContent>
+                <TabsContent value="completed">
+                  <BatchTable rows={completedBatches} showCompleted={true} />
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Cancel Batch Confirmation Modal */}
       <Dialog open={!!cancelBatchId} onOpenChange={() => setCancelBatchId(null)}>
