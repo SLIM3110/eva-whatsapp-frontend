@@ -79,7 +79,12 @@ const MarketReports = () => {
   // ── Submit ────────────────────────────────────────────────────
   const handleGenerate = async () => {
     const filledCommunities = communities.filter(c => c.trim());
-    if (!filledCommunities.length) { toast.error('Enter at least one community name'); return; }
+    if (reportType === 'single' && !communities[0]?.trim()) {
+      toast.error('Enter a community name'); return;
+    }
+    if (reportType === 'multi' && !filledCommunities.length) {
+      toast.error('Enter at least one community name'); return;
+    }
     if (!reportPeriod.trim())      { toast.error('Enter a report period'); return; }
     if (!agentName.trim())         { toast.error('Enter agent name'); return; }
     if (!csvFile)                  { toast.error('Upload a Property Monitor CSV export'); return; }
@@ -89,8 +94,13 @@ const MarketReports = () => {
 
     const form = new FormData();
     form.append('report_type', reportType);
-    filledCommunities.forEach((c, i) => form.append(`community_${i}`, c));
-    form.append('community_count', String(filledCommunities.length));
+    // Send community_name (singular) for single mode, communities[] for multi
+    if (reportType === 'single') {
+      form.append('community_name', communities[0].trim());
+    } else {
+      filledCommunities.forEach(c => form.append('communities[]', c));
+      form.append('community_count', String(filledCommunities.length));
+    }
     form.append('report_period', reportPeriod);
     form.append('agent_name', agentName);
     form.append('agent_contact', agentContact);
