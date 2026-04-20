@@ -32,6 +32,7 @@ const MarketReports = () => {
   const [locationNotes, setLocationNotes] = useState('');
   const [serviceChargePsf, setServiceChargePsf] = useState('');
   const [agentInstruction, setAgentInstruction] = useState('');
+  const [rentalCsvFile, setRentalCsvFile]       = useState<File | null>(null);
   const [imageFile, setImageFile]               = useState<File | null>(null);
   const [imagePrompt, setImagePrompt]           = useState('');
   const [generating, setGenerating]       = useState(false);
@@ -94,6 +95,7 @@ const MarketReports = () => {
     form.append('agent_name', agentName);
     form.append('agent_contact', agentContact);
     form.append('csv_file', csvFile);
+    if (rentalCsvFile)             form.append('rental_csv_file', rentalCsvFile);
     if (locationNotes.trim())      form.append('location_notes', locationNotes);
     if (imageFile)                 form.append('image_file', imageFile);
     if (imagePrompt.trim())        form.append('image_prompt', imagePrompt);
@@ -246,6 +248,19 @@ const MarketReports = () => {
                 />
                 <p className="text-xs text-muted-foreground">
                   Export your data from Property Monitor and upload here. The report will be generated from this data.
+                </p>
+              </div>
+
+              {/* Rental CSV Upload */}
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Rental Data CSV (optional)</label>
+                <Input
+                  type="file"
+                  accept=".csv"
+                  onChange={e => setRentalCsvFile(e.target.files?.[0] || null)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  If you have a separate rental transactions export from Property Monitor, upload it here to include yield calculations in the report.
                 </p>
               </div>
 
