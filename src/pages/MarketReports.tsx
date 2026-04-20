@@ -1,435 +1,394 @@
-import { useState, useCallback, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
-import { FileBarChart2, Loader2, Plus, X, Download, Trash2, ExternalLink } from 'lucide-react';
-import { toUAETime } from '@/lib/uaeTime';
+import { FileText, Upload, Loader2, Download, Plus, X, BarChart2 } from 'lucide-react';
 
-type ReportType = 'single' | 'multi';
-
-const daysUntil = (iso: string): number => {
-  const diff = new Date(iso).getTime() - Date.now();
-  return Math.ceil(diff / (1000 * 60 * 60 * 24));
-};
+const API_BASE = 'https://api.evaintelligencehub.online';
 
 const MarketReports = () => {
   const { user, profile } = useAuth();
 
-  // ── Generate form state ───────────────────────────────────────
-  const [reportType, setReportType]       = useState<ReportType>('single');
-  const [communities, setCommunities]     = useState<string[]>(['']);
-  const [reportPeriod, setReportPeriod]   = useState('');
-  const [agentName, setAgentName]         = useState('');
-  const [agentContact, setAgentContact]   = useState('');
-  const [csvFile, setCsvFile]             = useState<File | null>(null);
-  const [locationNotes, setLocationNotes] = useState('');
-  const [serviceChargePsf, setServiceChargePsf] = useState('');
+  // Mode
+  const [reportType, setReportType] = useState<'single' | 'comparison'>('single');
+
+  // Single mode
+  const [communityName, setCommunityName] = useState('');
+
+  // Comparison mode
+  const [communities, setCommunities] = useState<string[]>(['', '']);
+
+  // Files
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [rentalCsvFile, setRentalCsvFile] = useState<File | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+
+  // Options
+  const [serviceCharge, setServiceCharge] = useState('');
   const [agentInstruction, setAgentInstruction] = useState('');
-  const [rentalCsvFile, setRentalCsvFile]       = useState<File | null>(null);
-  const [imageFile, setImageFile]               = useState<File | null>(null);
-  const [imagePrompt, setImagePrompt]           = useState('');
-  const [generating, setGenerating]       = useState(false);
-  const [successResult, setSuccessResult] = useState<{ report_url: string; report_id: string; expires_at: string } | null>(null);
+  const [personalisationPrompt, setPersonalisationPrompt] = useState('');
 
-  // ── History state ─────────────────────────────────────────────
-  const [reports, setReports]   = useState<any[]>([]);
-  const [histLoading, setHistLoading] = useState(true);
-  const [deletingId, setDeletingId]   = useState<string | null>(null);
+  // UI state
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ report_url: string; expires_at: string } | null>(null);
 
-  // Pre-fill agent fields from profile
-  useEffect(() => {
-    if (profile) {
-      setAgentName(`${profile.first_name || ''} ${profile.last_name || ''}`.trim());
-      setAgentContact((profile as any).email || (profile as any).phone || '');
-    }
-  }, [profile]);
-
-  const fetchHistory = useCallback(async () => {
-    setHistLoading(true);
-    const { data } = await supabase
-      .from('market_reports')
-      .select('*')
-      .order('created_at', { ascending: false });
-    setReports(data || []);
-    setHistLoading(false);
-  }, []);
-
-  useEffect(() => { fetchHistory(); }, [fetchHistory]);
-
-  // ── Community helpers ─────────────────────────────────────────
   const addCommunity = () => {
-    if (communities.length < 4) setCommunities(prev => [...prev, '']);
+    if (communities.length < 5) setCommunities([...communities, '']);
   };
 
-  const removeCommunity = (i: number) => {
-    setCommunities(prev => prev.filter((_, idx) => idx !== i));
+  const removeCommunity = (idx: number) => {
+    if (communities.length > 2) setCommunities(communities.filter((_, i) => i !== idx));
   };
 
-  const updateCommunity = (i: number, val: string) => {
-    setCommunities(prev => prev.map((c, idx) => idx === i ? val : c));
+  const updateCommunity = (idx: number, val: string) => {
+    const updated = [...communities];
+    updated[idx] = val;
+    setCommunities(updated);
   };
 
-  // ── Submit ────────────────────────────────────────────────────
-  const handleGenerate = async () => {
-    const filledCommunities = communities.filter(c => c.trim());
-    if (reportType === 'single' && !communities[0]?.trim()) {
-      toast.error('Enter a community name'); return;
+  const handleSubmit = async () => {
+    if (!csvFile) {
+      toast.error('Please upload a sales transactions CSV file');
+      return;
     }
-    if (reportType === 'multi' && !filledCommunities.length) {
-      toast.error('Enter at least one community name'); return;
+    if (reportType === 'single' && !communityName.trim()) {
+      toast.error('Please enter a community name');
+      return;
     }
-    if (!reportPeriod.trim())      { toast.error('Enter a report period'); return; }
-    if (!agentName.trim())         { toast.error('Enter agent name'); return; }
-    if (!csvFile)                  { toast.error('Upload a Property Monitor CSV export'); return; }
+    if (reportType === 'comparison' && communities.filter(c => c.trim()).length < 2) {
+      toast.error('Please enter at least 2 community names for comparison');
+      return;
+    }
 
-    setGenerating(true);
-    setSuccessResult(null);
-
-    const form = new FormData();
-    form.append('report_type', reportType);
-    // Send community_name (singular) for single mode, communities[] for multi
-    if (reportType === 'single') {
-      form.append('community_name', communities[0].trim());
-    } else {
-      filledCommunities.forEach(c => form.append('communities[]', c));
-      form.append('community_count', String(filledCommunities.length));
-    }
-    form.append('report_period', reportPeriod);
-    form.append('agent_name', agentName);
-    form.append('agent_contact', agentContact);
-    form.append('csv_file', csvFile);
-    if (rentalCsvFile)             form.append('rental_csv_file', rentalCsvFile);
-    if (locationNotes.trim())      form.append('location_notes', locationNotes);
-    if (imageFile)                 form.append('image_file', imageFile);
-    if (imagePrompt.trim())        form.append('image_prompt', imagePrompt);
-    if (serviceChargePsf !== '')   form.append('service_charge_psf', serviceChargePsf);
-    if (agentInstruction.trim())   form.append('agent_instruction', agentInstruction);
-    if (user)                      form.append('agent_id', user.id);
+    setLoading(true);
+    setResult(null);
 
     try {
-      const res = await fetch('https://api.evaintelligencehub.online/market-reports/generate', {
+      const form = new FormData();
+      form.append('csv_file', csvFile);
+      if (rentalCsvFile) form.append('rental_csv_file', rentalCsvFile);
+      if (imageFile) form.append('image_file', imageFile);
+
+      form.append('report_type', reportType);
+      form.append('agent_id', user!.id);
+      form.append('agent_name', profile?.full_name || profile?.name || user!.email || 'EVA Agent');
+
+      if (reportType === 'single') {
+        form.append('community_name', communityName.trim());
+      } else {
+        communities.filter(c => c.trim()).forEach(c => form.append('communities[]', c.trim()));
+      }
+
+      if (serviceCharge) form.append('service_charge_psf', serviceCharge);
+      if (agentInstruction) form.append('agent_instruction', agentInstruction);
+      if (imageFile && personalisationPrompt) form.append('personalisation_prompt', personalisationPrompt);
+
+      const res = await fetch(`${API_BASE}/api/market-reports/generate`, {
         method: 'POST',
         body: form,
       });
+
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || json.message || 'Generation failed');
-      setSuccessResult(json);
-      fetchHistory();
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || json.message || 'Report generation failed');
+      }
+
+      setResult({ report_url: json.report_url, expires_at: json.expires_at });
+      toast.success('Report generated successfully!');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to generate report');
+      toast.error(err.message || 'Something went wrong');
+    } finally {
+      setLoading(false);
     }
-    setGenerating(false);
   };
 
-  // ── Delete ────────────────────────────────────────────────────
-  const deleteReport = async (id: string) => {
-    setDeletingId(id);
-    const { error } = await supabase.from('market_reports').delete().eq('id', id);
-    if (error) {
-      toast.error('Failed to delete report');
-    } else {
-      toast.success('Report deleted');
-      fetchHistory();
-    }
-    setDeletingId(null);
+  const resetForm = () => {
+    setCsvFile(null);
+    setRentalCsvFile(null);
+    setImageFile(null);
+    setCommunityName('');
+    setCommunities(['', '']);
+    setServiceCharge('');
+    setAgentInstruction('');
+    setPersonalisationPrompt('');
+    setResult(null);
   };
 
-  // ── Render ────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        <FileBarChart2 className="w-5 h-5 text-primary" />
-        <h1 className="text-xl font-semibold">Market Reports</h1>
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <BarChart2 className="text-emerald-700 w-7 h-7" />
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Market Reports</h1>
+          <p className="text-sm text-gray-500">Generate branded PDF market intelligence reports from Property Monitor data</p>
+        </div>
       </div>
 
-      <Tabs defaultValue="generate">
-        <TabsList>
-          <TabsTrigger value="generate">Generate Report</TabsTrigger>
-          <TabsTrigger value="history">Report History</TabsTrigger>
-        </TabsList>
+      {/* Report type toggle */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-gray-700">Report Type</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2">
+            <Button
+              variant={reportType === 'single' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setReportType('single'); setResult(null); }}
+              className={reportType === 'single' ? 'bg-emerald-700 hover:bg-emerald-800' : ''}
+            >
+              Single Community
+            </Button>
+            <Button
+              variant={reportType === 'comparison' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setReportType('comparison'); setResult(null); }}
+              className={reportType === 'comparison' ? 'bg-emerald-700 hover:bg-emerald-800' : ''}
+            >
+              Multi-Area Comparison
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-        {/* ── Generate Tab ───────────────────────────────────────── */}
-        <TabsContent value="generate" className="mt-4">
-          <Card>
-            <CardHeader><CardTitle>New Market Report</CardTitle></CardHeader>
-            <CardContent className="space-y-5">
-
-              {/* Report Type toggle */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Report Type</label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant={reportType === 'single' ? 'default' : 'outline'}
-                    onClick={() => { setReportType('single'); setCommunities(prev => [prev[0] || '']); }}
-                  >
-                    Single Community
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={reportType === 'multi' ? 'default' : 'outline'}
-                    onClick={() => setReportType('multi')}
-                  >
-                    Multi-Area Comparison
-                  </Button>
-                </div>
-              </div>
-
-              {/* Community Name(s) */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">
-                  {reportType === 'multi' ? 'Community Names (up to 4)' : 'Community Name'}
-                </label>
-                <div className="space-y-2">
-                  {communities.map((c, i) => (
-                    <div key={i} className="flex gap-2">
-                      <Input
-                        value={c}
-                        onChange={e => updateCommunity(i, e.target.value)}
-                        placeholder={reportType === 'multi' ? `Community ${i + 1}` : 'e.g. Mudon Al Ranim'}
-                      />
-                      {reportType === 'multi' && communities.length > 1 && (
-                        <Button type="button" variant="ghost" size="icon" onClick={() => removeCommunity(i)}>
-                          <X className="w-4 h-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                  {reportType === 'multi' && communities.length < 4 && (
-                    <Button type="button" variant="outline" size="sm" onClick={addCommunity}>
-                      <Plus className="w-4 h-4 mr-1" /> Add Community
+      {/* Community name(s) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-gray-700">
+            {reportType === 'single' ? 'Community Name' : 'Communities to Compare'}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {reportType === 'single' ? (
+            <Input
+              placeholder="e.g. Dubai Hills Estate, Mudon Al Ranim, JVC..."
+              value={communityName}
+              onChange={e => setCommunityName(e.target.value)}
+            />
+          ) : (
+            <>
+              {communities.map((c, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <Input
+                    placeholder={`Community ${idx + 1}`}
+                    value={c}
+                    onChange={e => updateCommunity(idx, e.target.value)}
+                  />
+                  {communities.length > 2 && (
+                    <Button variant="ghost" size="icon" onClick={() => removeCommunity(idx)}>
+                      <X className="w-4 h-4 text-gray-400" />
                     </Button>
                   )}
                 </div>
-              </div>
+              ))}
+              {communities.length < 5 && (
+                <Button variant="outline" size="sm" onClick={addCommunity} className="gap-1">
+                  <Plus className="w-4 h-4" /> Add Community
+                </Button>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
-              {/* Report Period */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Report Period</label>
-                <Input
-                  value={reportPeriod}
-                  onChange={e => setReportPeriod(e.target.value)}
-                  placeholder="e.g. Q1 2025"
-                />
-              </div>
-
-              {/* Agent Name */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Agent Name</label>
-                <Input value={agentName} onChange={e => setAgentName(e.target.value)} />
-              </div>
-
-              {/* Agent Contact */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Agent Contact</label>
-                <Input value={agentContact} onChange={e => setAgentContact(e.target.value)} placeholder="Email or phone number" />
-              </div>
-
-              {/* Service Charge */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Service Charge (AED/sqft/year) — optional</label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={0.5}
-                  value={serviceChargePsf}
-                  onChange={e => setServiceChargePsf(e.target.value)}
-                  placeholder="e.g. 18"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Enter the community's annual service charge per sqft. Used to calculate net yield in the report.
-                </p>
-              </div>
-
-              {/* CSV Upload */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Property Monitor CSV Export</label>
-                <Input
+      {/* Data files */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-gray-700">Property Monitor Data</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Sales CSV */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Sales Transactions CSV <span className="text-red-500">*</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <label className="cursor-pointer">
+                <input
                   type="file"
                   accept=".csv"
+                  className="hidden"
                   onChange={e => setCsvFile(e.target.files?.[0] || null)}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Export your data from Property Monitor and upload here. The report will be generated from this data.
-                </p>
-              </div>
+                <div className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm text-gray-600 hover:bg-gray-50 transition-colors">
+                  <Upload className="w-4 h-4" />
+                  {csvFile ? csvFile.name : 'Upload sales CSV'}
+                </div>
+              </label>
+              {csvFile && (
+                <Button variant="ghost" size="icon" onClick={() => setCsvFile(null)}>
+                  <X className="w-4 h-4 text-gray-400" />
+                </Button>
+              )}
+            </div>
+          </div>
 
-              {/* Rental CSV Upload */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Rental Data CSV (optional)</label>
-                <Input
+          {/* Rental CSV */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Rental Transactions CSV <span className="text-gray-400">(optional — for yield analysis)</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <label className="cursor-pointer">
+                <input
                   type="file"
                   accept=".csv"
+                  className="hidden"
                   onChange={e => setRentalCsvFile(e.target.files?.[0] || null)}
                 />
-                <p className="text-xs text-muted-foreground">
-                  If you have a separate rental transactions export from Property Monitor, upload it here to include yield calculations in the report.
-                </p>
-              </div>
+                <div className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm text-gray-600 hover:bg-gray-50 transition-colors">
+                  <Upload className="w-4 h-4" />
+                  {rentalCsvFile ? rentalCsvFile.name : 'Upload rental CSV'}
+                </div>
+              </label>
+              {rentalCsvFile && (
+                <Button variant="ghost" size="icon" onClick={() => setRentalCsvFile(null)}>
+                  <X className="w-4 h-4 text-gray-400" />
+                </Button>
+              )}
+            </div>
+          </div>
 
-              {/* Location Notes */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Agent Observations (optional)</label>
-                <Textarea
-                  value={locationNotes}
-                  onChange={e => setLocationNotes(e.target.value)}
-                  placeholder="e.g. Park-facing units in Phase 3 consistently achieve the strongest prices..."
-                  rows={3}
-                />
-              </div>
-
-              {/* Agent Instruction */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Additional instructions for Gemini (optional)</label>
-                <Textarea
-                  value={agentInstruction}
-                  onChange={e => setAgentInstruction(e.target.value)}
-                  placeholder="e.g. Mention that Phase 3 is the only phase with direct park access. Highlight that corner units here sell faster than anywhere else in the community."
-                  rows={3}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Tell Gemini anything specific you want included or emphasised in the report narrative.
-                </p>
-              </div>
-
-              {/* Image Upload */}
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Optional: Add an image to personalise the report</label>
-                <Input
+          {/* Agent photo */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Agent Photo <span className="text-gray-400">(optional — appears on cover)</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <label className="cursor-pointer">
+                <input
                   type="file"
                   accept="image/*"
-                  onChange={e => { setImageFile(e.target.files?.[0] || null); if (!e.target.files?.[0]) setImagePrompt(''); }}
+                  className="hidden"
+                  onChange={e => setImageFile(e.target.files?.[0] || null)}
                 />
-              </div>
-
-              {/* Image Prompt — only shown if image uploaded */}
+                <div className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm text-gray-600 hover:bg-gray-50 transition-colors">
+                  <Upload className="w-4 h-4" />
+                  {imageFile ? imageFile.name : 'Upload photo'}
+                </div>
+              </label>
               {imageFile && (
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Tell Gemini how to use this image</label>
-                  <Textarea
-                    value={imagePrompt}
-                    onChange={e => setImagePrompt(e.target.value)}
-                    placeholder="e.g. Place this image on the cover page as a hero shot of the community"
-                    rows={2}
-                  />
-                </div>
-              )}
-
-              {/* Submit */}
-              <div className="space-y-3 pt-1">
-                <Button onClick={handleGenerate} disabled={generating} className="w-full sm:w-auto">
-                  {generating
-                    ? <><Loader2 className="animate-spin w-4 h-4 mr-2" /> Generating...</>
-                    : <><FileBarChart2 className="w-4 h-4 mr-2" /> Generate Report</>}
+                <Button variant="ghost" size="icon" onClick={() => setImageFile(null)}>
+                  <X className="w-4 h-4 text-gray-400" />
                 </Button>
-                {generating && (
-                  <p className="text-sm text-muted-foreground animate-pulse">
-                    Generating your report — this takes 20–30 seconds...
-                  </p>
-                )}
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Options */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold text-gray-700">Report Options</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Service Charge (AED/sqft/year) <span className="text-gray-400">(optional — for net yield)</span>
+            </label>
+            <Input
+              type="number"
+              placeholder="e.g. 18"
+              value={serviceCharge}
+              onChange={e => setServiceCharge(e.target.value)}
+              className="w-40"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Instructions for AI Narrative
+            </label>
+            <Textarea
+              placeholder="e.g. Highlight the strong rental demand from tech professionals. Mention the new metro station opening nearby. Focus on villa performance over apartments."
+              value={agentInstruction}
+              onChange={e => setAgentInstruction(e.target.value)}
+              rows={3}
+              className="text-sm"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              These instructions guide the AI-written executive summary and market outlook sections.
+            </p>
+          </div>
+
+          {imageFile && (
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">
+                Personalisation Note <span className="text-gray-400">(shown with your photo)</span>
+              </label>
+              <Textarea
+                placeholder="e.g. I specialise in villa communities across Dubai South and have helped 40+ families find their perfect home here."
+                value={personalisationPrompt}
+                onChange={e => setPersonalisationPrompt(e.target.value)}
+                rows={2}
+                className="text-sm"
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Generate button */}
+      <div className="flex gap-3">
+        <Button
+          onClick={handleSubmit}
+          disabled={loading}
+          className="bg-emerald-700 hover:bg-emerald-800 gap-2 px-6"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Generating Report…
+            </>
+          ) : (
+            <>
+              <FileText className="w-4 h-4" />
+              Generate Report
+            </>
+          )}
+        </Button>
+        {result && (
+          <Button variant="outline" onClick={resetForm}>
+            New Report
+          </Button>
+        )}
+      </div>
+
+      {/* Result */}
+      {result && (
+        <Card className="border-emerald-200 bg-emerald-50">
+          <CardContent className="pt-5 pb-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="font-semibold text-emerald-800 text-sm mb-1">✓ Report Ready</p>
+                <p className="text-xs text-gray-500">
+                  Link expires: {result.expires_at ? new Date(result.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : 'N/A'}
+                </p>
               </div>
-
-              {/* Success card */}
-              {successResult && (
-                <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-2">
-                  <p className="font-semibold text-green-800">Report ready!</p>
-                  <p className="text-sm text-green-700">
-                    Report available for 30 days
-                    {successResult.expires_at ? ` (expires ${toUAETime(successResult.expires_at)})` : ''}.
-                  </p>
-                  <Button asChild size="sm" className="bg-green-700 hover:bg-green-800 text-white">
-                    <a href={successResult.report_url} target="_blank" rel="noopener noreferrer">
-                      <Download className="w-4 h-4 mr-2" /> Download Report
-                    </a>
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── History Tab ────────────────────────────────────────── */}
-        <TabsContent value="history" className="mt-4">
-          <Card>
-            <CardHeader><CardTitle>Report History</CardTitle></CardHeader>
-            <CardContent>
-              {histLoading ? (
-                <div className="flex justify-center py-10">
-                  <Loader2 className="animate-spin w-6 h-6 text-primary" />
-                </div>
-              ) : reports.length === 0 ? (
-                <p className="text-muted-foreground text-sm">No reports generated yet.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader><TableRow>
-                      <TableHead>Community</TableHead>
-                      <TableHead>Report Type</TableHead>
-                      <TableHead>Agent</TableHead>
-                      <TableHead>Generated</TableHead>
-                      <TableHead>Expires</TableHead>
-                      <TableHead></TableHead>
-                    </TableRow></TableHeader>
-                    <TableBody>
-                      {reports.map(r => {
-                        const days = r.expires_at ? daysUntil(r.expires_at) : null;
-                        return (
-                          <TableRow key={r.id}>
-                            <TableCell className="font-medium">{r.community_name || '—'}</TableCell>
-                            <TableCell>
-                              {r.report_type === 'multi'
-                                ? <Badge className="bg-amber-500 text-white">Comparison</Badge>
-                                : <Badge className="bg-green-600 text-white">Single</Badge>}
-                            </TableCell>
-                            <TableCell>{r.agent_name || '—'}</TableCell>
-                            <TableCell className="text-sm">{r.created_at ? toUAETime(r.created_at) : '—'}</TableCell>
-                            <TableCell className="text-sm">
-                              {days === null ? '—' : (
-                                <span className={days <= 3 ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-                                  {days <= 0 ? 'Expired' : `Expires in ${days} day${days === 1 ? '' : 's'}`}
-                                </span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex gap-1">
-                                {r.report_url && (
-                                  <Button size="sm" variant="outline" asChild>
-                                    <a href={r.report_url} target="_blank" rel="noopener noreferrer">
-                                      <ExternalLink className="w-3 h-3 mr-1" /> Download
-                                    </a>
-                                  </Button>
-                                )}
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-destructive hover:text-destructive"
-                                  disabled={deletingId === r.id}
-                                  onClick={() => deleteReport(r.id)}
-                                >
-                                  {deletingId === r.id
-                                    ? <Loader2 className="animate-spin w-3 h-3" />
-                                    : <><Trash2 className="w-3 h-3 mr-1" /> Delete</>}
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+              <a
+                href={result.report_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Button size="sm" className="bg-emerald-700 hover:bg-emerald-800 gap-2">
+                  <Download className="w-4 h-4" />
+                  Open PDF
+                </Button>
+              </a>
+            </div>
+            <div className="mt-3 p-2 bg-white rounded border border-emerald-100">
+              <p className="text-xs text-gray-500 break-all">{result.report_url}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };
