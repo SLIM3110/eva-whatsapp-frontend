@@ -986,4 +986,35 @@ const UnitCollector = () => {
                   <BatchTable rows={activeBatches} showCompleted={false} />
                 </TabsContent>
                 <TabsContent value="completed">
-                  <BatchTable rows={co
+                  <BatchTable rows={completedBatches} showCompleted={true} />
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+        );
+      })()}
+
+      {/* Cancel Batch Confirmation Modal */}
+      <Dialog open={!!cancelBatchId} onOpenChange={() => setCancelBatchId(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Cancel Batch?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {cancelBatchId && (() => {
+              const b = batches.find(b => b.id === cancelBatchId);
+              return `Cancel this batch? ${b?.pending_count || 0} pending messages will not be sent.`;
+            })()}
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setCancelBatchId(null)}>Keep Batch</Button>
+            <Button variant="destructive" onClick={() => cancelBatch(cancelBatchId!)} disabled={cancellingBatch}>
+              {cancellingBatch ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
+              Yes, Cancel Batch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default UnitCollector;
