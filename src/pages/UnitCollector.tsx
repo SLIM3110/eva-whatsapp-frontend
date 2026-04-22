@@ -864,6 +864,16 @@ const UnitCollector = () => {
                 ))}
               </SelectContent>
             </Select>
+            {(() => {
+              const tmpl = templates.find(t => t.id === selectedTemplate);
+              if (!tmpl) return null;
+              const len = (tmpl.body || '').length;
+              return (
+                <p className={`text-xs mt-1 font-medium ${len > 255 ? 'text-red-500' : len > 200 ? 'text-amber-500' : 'text-green-600'}`}>
+                  {len} characters{len > 255 ? ' — ⚠️ over 255-char poll limit; messages will be truncated when sent as a poll' : len > 200 ? ' — approaching poll limit' : ' — poll-compatible ✓'}
+                </p>
+              );
+            })()}
           </div>
 
           {/* Poll toggle */}
@@ -1001,20 +1011,4 @@ const UnitCollector = () => {
           <p className="text-sm text-muted-foreground">
             {cancelBatchId && (() => {
               const b = batches.find(b => b.id === cancelBatchId);
-              return `Cancel this batch? ${b?.pending_count || 0} pending messages will not be sent.`;
-            })()}
-          </p>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setCancelBatchId(null)}>Keep Batch</Button>
-            <Button variant="destructive" onClick={() => cancelBatch(cancelBatchId!)} disabled={cancellingBatch}>
-              {cancellingBatch ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
-              Yes, Cancel Batch
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-export default UnitCollector;
+              return `Cancel this batch
