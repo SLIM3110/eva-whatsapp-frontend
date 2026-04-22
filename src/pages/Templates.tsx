@@ -99,7 +99,7 @@ const Templates = () => {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            Use placeholders: <code className="bg-muted px-1 rounded">[Owner Name]</code>, <code className="bg-muted px-1 rounded">[Building Name]</code>, <code className="bg-muted px-1 rounded">[Unit Number]</code>, <code className="bg-muted px-1 rounded">[Agent Name]</code>. Gemini will rewrite each message with bold, noticeable changes so every recipient gets a genuinely unique version.
+            Use placeholders: <code className="bg-muted px-1 rounded">[Owner Name]</code>, <code className="bg-muted px-1 rounded">[Building Name]</code>, <code className="bg-muted px-1 rounded">[Unit Number]</code>, <code className="bg-muted px-1 rounded">[Agent Name]</code>. Gemini makes small natural tweaks per recipient so messages feel personal without changing your wording.
           </p>
           {templates.length === 0 ? (
             <p className="text-muted-foreground text-sm">No templates yet. Create one to get started.</p>
@@ -164,4 +164,39 @@ const Templates = () => {
           <div className="space-y-4">
             <div>
               <label className="text-sm font-medium">Template Name</label>
-              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="e.g.
+              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="e.g. Standard Introduction" className="mt-1" />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Message Body</label>
+              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi [Owner Name], I am [Agent Name] from EVA..." rows={6} className="mt-1" />
+              <div className="flex items-center justify-between mt-1">
+                <span
+                  className={`text-xs font-medium ${
+                    templateBody.length > 255
+                      ? 'text-red-500'
+                      : templateBody.length > 200
+                      ? 'text-amber-500'
+                      : 'text-green-600'
+                  }`}
+                >
+                  {templateBody.length} / 255 characters
+                </span>
+                {templateBody.length > 255 && (
+                  <span className="text-xs text-red-500 font-medium">
+                    Over 255-char limit - message will be truncated on send
+                  </span>
+                )}
+              </div>
+            </div>
+            <Button onClick={handleSave} disabled={saving} className="w-full">
+              {saving ? <Loader2 className="animate-spin mr-2" /> : null}
+              {editingId ? 'Update Template' : 'Create Template'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default Templates;
