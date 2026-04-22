@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { toUAETime } from '@/lib/uaeTime';
+import { Switch } from '@/components/ui/switch';
 import { Upload, Loader2, Eye, ArrowLeft, X, RefreshCw } from 'lucide-react';
 
 // ── Phone number utilities ────────────────────────────────────────────────────
@@ -147,49 +148,175 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
 
 // ── Gemini personalisation ────────────────────────────────────────────────────
 
-const personaliseWithGemini = async (message: string, geminiKey: string): Promise<string> => {
+// ── Local variation fallback (used when Gemini fails) ────────────────────────
+// Provides structural message variation without an API call.
+// Rotates greetings, transitions, and closings so messages are never identical
+// even if the AI rewrite step fails.
+
+const GREETING_VARIANTS = [
+  (name: string) => `Hi ${name},`,
+  (name: string) => `Hello ${name},`,
+  (name: string) => `Good day ${name},`,
+  (name: string) => `Dear ${name},`,
+  (name: string) => `Hi there ${name},`,
+];
+
+const CLOSING_VARIANTS = [
+  'Looking forward to connecting with you.',
+  'I look forward to hearing from you.',
+  'Please feel free to reach out at any time.',
+  'Do not hesitate to get in touch.',
+  'Happy to answer any questions you may have.',
+];
+
+const TRANSITION_PAIRS: [string, string[]][] = [
+  ['I wanted to reach out', ['I am reaching out', 'I would like to connect', 'I thought to get in touch']],
+  ['please feel free', ['please do not hesitate', 'you are welcome']],
+  ['at your earliest convenience', ['whenever suits you', 'at a time that works for you', 'whenever you are free']],
+];
+
+const applyLocalVariation = (message: string, index: number): string => {
+  let varied = message;
+
+  // Rotate transition phrases deterministically per message index
+  TRANSITION_PAIRS.forEach(([from, alternatives], vi) => {
+    const lower = varied.toLowerCase();
+    if (lower.includes(from.toLowerCase())) {
+      const to = alternatives[(index + vi) % alternatives.length];
+      varied = varied.replace(new RegExp(from, 'i'), to);
+    }
+  });
+
+  // Append a rotating closing sentence if none already present
+  const hasClosing = /looking forward|feel free|don.t hesitate|reach out|get in touch|happy to answer/i.test(varied);
+  if (!hasClosing) {
+    const closing = CLOSING_VARIANTS[index % CLOSING_VARIANTS.length];
+    varied = varied.trimEnd() + '\n\n' + closing;
+  }
+
+  return varied;
+};
+
+// ── Gemini personalisation ────────────────────────────────────────────────────
+
+// Models tried in order. If one fails (404, quota exhausted) the next is used.
+const GEMINI_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.0-flash-lite',
+];
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+const personaliseWithGemini = async (
+  message: string,
+  geminiKey: string,
+  modelIndex = 0,
+  attempt = 0
+): Promise<{ text: string; succeeded: boolean }> => {
+  const model = GEMINI_MODELS[modelIndex] ?? GEMINI_MODELS[0];
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
       {
         method: 'POST',
         signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          generationConfig: { temperature: 1.8 },
           contents: [{
             parts: [{
-              text: `You are rewriting a WhatsApp message for a real estate agent. Each recipient must receive a version that feels genuinely unique — not a minor tweak, but a real rewrite. Make bold, noticeable changes: restructure sentences significantly, use different vocabulary and expressions throughout, change the opening and closing style entirely, vary the flow and rhythm of the message, and rephrase ideas in fresh ways. The goal is that two versions of the same template should not look like the same message at all. Keep the full meaning, all facts, and all key points completely intact. Do NOT shorten, summarise, or cut any part of the message. The output must be approximately the same length as the input. Keep all placeholders exactly as they are (e.g. {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}). Return only the message text with no explanation or commentary. Message: ${message}`,
+              text: `You are rewriting a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Each recipient must receive a version that feels genuinely unique. Make bold, noticeable changes: restructure sentences significantly, use different vocabulary and phrasing throughout, change the opening and closing style entirely, vary the rhythm of the writing. Two rewrites of the same template must not look like the same message. Keep all meaning and key facts completely intact. Do NOT shorten or omit anything — the output must be similar in length to the input. Preserve all placeholders exactly as written: {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}. Return only the rewritten message with no commentary or explanation.\n\nMessage to rewrite:\n\n${message}`,
             }],
           }],
+          generationConfig: { temperature: 1.4 },
         }),
       }
     );
     clearTimeout(timeoutId);
-    if (!res.ok) return message;
+
+    // Rate limited — exponential back-off then retry
+    if (res.status === 429) {
+      if (attempt < 3) {
+        const backoff = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
+        console.warn(`[Gemini] 429 on ${model}, retrying in ${Math.round(backoff)}ms (attempt ${attempt + 1})`);
+        await sleep(backoff);
+        return personaliseWithGemini(message, geminiKey, modelIndex, attempt + 1);
+      }
+      if (modelIndex + 1 < GEMINI_MODELS.length) {
+        console.warn(`[Gemini] Quota exhausted on ${model}, switching to ${GEMINI_MODELS[modelIndex + 1]}`);
+        return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
+      }
+      console.error('[Gemini] All models quota-limited — using local variation fallback');
+      return { text: message, succeeded: false };
+    }
+
+    // Model not available on this key/tier — try next
+    if (res.status === 404 && modelIndex + 1 < GEMINI_MODELS.length) {
+      console.warn(`[Gemini] ${model} not found (404), trying ${GEMINI_MODELS[modelIndex + 1]}`);
+      return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error(`[Gemini] HTTP ${res.status} from ${model}:`, body.slice(0, 400));
+      return { text: message, succeeded: false };
+    }
+
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    return text || message;
-  } catch {
-    return message;
+
+    if (!text) {
+      const reason = data?.candidates?.[0]?.finishReason ?? 'unknown';
+      console.warn(`[Gemini] Empty response from ${model} — finishReason: ${reason}`);
+      return { text: message, succeeded: false };
+    }
+
+    // Guard: if the message had placeholders, the rewrite must preserve them
+    const hadPlaceholders = /\{\{[^}]+\}\}/.test(message);
+    const keptPlaceholders = /\{\{[^}]+\}\}/.test(text);
+    if (hadPlaceholders && !keptPlaceholders) {
+      console.warn('[Gemini] Rewrite stripped placeholders — discarding and using local variation');
+      return { text: message, succeeded: false };
+    }
+
+    return { text, succeeded: true };
+  } catch (err: any) {
+    const label = err?.name === 'AbortError' ? 'Timeout' : 'Error';
+    console.error(`[Gemini] ${label} on model ${model}:`, err?.message ?? err);
+    return { text: message, succeeded: false };
   }
 };
 
+/** Personalise all messages sequentially with rate-limit pacing.
+ *  Falls back to local structural variation per message if Gemini fails. */
 const personaliseAllWithGemini = async (
   messages: string[],
   geminiKey: string,
   onProgress: (done: number, total: number) => void
 ): Promise<string[]> => {
-  const CONCURRENCY = 8;
+  // 800 ms between calls ≈ 75 RPM — well within paid-tier limits and safe for free tier
+  const DELAY_MS = 800;
   const results: string[] = new Array(messages.length);
-  for (let start = 0; start < messages.length; start += CONCURRENCY) {
-    const chunk = messages.slice(start, start + CONCURRENCY);
-    const chunkResults = await Promise.all(chunk.map(msg => personaliseWithGemini(msg, geminiKey)));
-    chunkResults.forEach((r, i) => { results[start + i] = r; });
-    onProgress(Math.min(start + CONCURRENCY, messages.length), messages.length);
+  let aiCount = 0;
+  let localCount = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const { text, succeeded } = await personaliseWithGemini(messages[i], geminiKey);
+    if (succeeded) {
+      results[i] = text;
+      aiCount++;
+    } else {
+      results[i] = applyLocalVariation(messages[i], i);
+      localCount++;
+    }
+    onProgress(i + 1, messages.length);
+    if (i < messages.length - 1) await sleep(DELAY_MS);
   }
+
+  console.log(`[Gemini] Complete — ${aiCount} AI rewrites, ${localCount} local-variation fallbacks`);
   return results;
 };
 
@@ -220,6 +347,7 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [sendPoll, setSendPoll]             = useState(true);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -369,6 +497,7 @@ const UnitCollector = () => {
         uploaded_by:     user!.id,
         total_contacts:  rows.length,
         pending_count:   rows.length,
+        send_poll:       sendPoll,
       }).select().single();
       if (batchError) throw batchError;
 
@@ -377,11 +506,11 @@ const UnitCollector = () => {
 
       let finalMsgs: string[];
       if (geminiKey) {
-        setUploadProgress(`Generating personalised messages (0 of ${rows.length})...`);
+        setUploadProgress(`Connecting to Gemini AI — personalising messages (0 of ${rows.length})...`);
         finalMsgs = await personaliseAllWithGemini(
           baseMsgs,
           geminiKey,
-          (done, total) => setUploadProgress(`Generating personalised messages (${done} of ${total})...`)
+          (done, total) => setUploadProgress(`Personalising messages with AI (${done} of ${total})...`)
         );
       } else {
         finalMsgs = baseMsgs;
@@ -409,6 +538,7 @@ const UnitCollector = () => {
       setFileMappingPreview(false);
       setParsedRows(null);
       setUploadProgress('');
+      setSendPoll(true);
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
@@ -736,6 +866,27 @@ const UnitCollector = () => {
             </Select>
           </div>
 
+          {/* Poll toggle */}
+          <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
+            <Switch
+              id="send-poll"
+              checked={sendPoll}
+              onCheckedChange={setSendPoll}
+              className="mt-0.5"
+            />
+            <div>
+              <label htmlFor="send-poll" className="text-sm font-medium cursor-pointer">
+                Send interest poll after each message
+              </label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                4–9 seconds after the outreach message, recipients receive a WhatsApp poll:
+                <span className="font-medium"> 🏠 Rent it out · 💰 Sell it · 📊 Send me market data · ❌ Remove me</span>.
+                Poll responses are routed automatically — opted-out numbers are suppressed forever,
+                rent/sell leads get a personalised Gemini follow-up, and market data requests trigger a report.
+              </p>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <Button onClick={handleUpload} disabled={uploading || !!parseError} className="w-full sm:w-auto">
               {uploading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
@@ -835,35 +986,4 @@ const UnitCollector = () => {
                   <BatchTable rows={activeBatches} showCompleted={false} />
                 </TabsContent>
                 <TabsContent value="completed">
-                  <BatchTable rows={completedBatches} showCompleted={true} />
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-        );
-      })()}
-
-      {/* Cancel Batch Confirmation Modal */}
-      <Dialog open={!!cancelBatchId} onOpenChange={() => setCancelBatchId(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Cancel Batch?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            {cancelBatchId && (() => {
-              const b = batches.find(b => b.id === cancelBatchId);
-              return `Cancel this batch? ${b?.pending_count || 0} pending messages will not be sent.`;
-            })()}
-          </p>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setCancelBatchId(null)}>Keep Batch</Button>
-            <Button variant="destructive" onClick={() => cancelBatch(cancelBatchId!)} disabled={cancellingBatch}>
-              {cancellingBatch ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
-              Yes, Cancel Batch
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-export default UnitCollector;
+                  <BatchTable rows={co
