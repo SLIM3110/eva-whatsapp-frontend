@@ -35,7 +35,6 @@ const isPhoneColumn = (header: string, sampleValues: string[]): boolean => {
   const norm = header.toLowerCase().replace(/[\s_\-]/g, '');
   const keywords = ['mobile','phone','number','tel','contact','whatsapp','cell','mob','fax','num'];
   if (keywords.some(kw => norm.includes(kw))) return true;
-  // Fall back to content analysis — if 60%+ of non-empty values look like phone numbers
   const nonEmpty = sampleValues.filter(v => v?.trim());
   if (nonEmpty.length === 0) return false;
   return nonEmpty.filter(looksLikePhone).length / nonEmpty.length >= 0.6;
@@ -44,20 +43,16 @@ const isPhoneColumn = (header: string, sampleValues: string[]): boolean => {
 const cleanPhone = (raw: string): string | null => {
   if (!raw) return null;
   let str = String(raw).trim();
-  // Handle Excel scientific notation e.g. 9.71504046276E+11
   if (/^[\d.]+[eE][+\-]?\d+$/.test(str)) {
     try { str = String(Math.round(Number(str))); } catch { return null; }
   }
   let num = str.replace(/[\s\-\(\)\.\+\/\|]/g, '');
   if (num.startsWith('00')) num = num.slice(2);
   if (!/^\d+$/.test(num)) return null;
-  // UAE-specific normalisation
   if (num.startsWith('00971')) num = '971' + num.slice(5);
-  // Strip stray leading zero after country code: 9710504576568 → 971504576568
   else if (/^9710\d{9}$/.test(num)) num = '971' + num.slice(4);
   else if (num.startsWith('0') && num.length === 10) num = '971' + num.slice(1);
   else if (/^[5-9]\d{8}$/.test(num)) num = '971' + num;
-  // International E.164: 8–15 digits
   if (num.length < 8 || num.length > 15) return null;
   return num;
 };
@@ -96,7 +91,7 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
       skipEmptyLines: true,
       transformHeader: h => h.trim(),
     });
-    if (result.errors.length > 0) throw new Error(`CSV parse error: ${result.errors[0].message}`);
+    if (result.errors.length > 0) throw new Error('CSV parse error: ' + result.errors[0].message);
     rawHeaders = result.meta.fields || [];
     data = result.data;
   }
@@ -113,7 +108,6 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
     );
   }
 
-  // Prioritise explicit "owner" columns before falling back to any "name" column
   const nameColIdx = (() => {
     const ownerIdx = headers.findIndex(h => h.includes('owner'));
     if (ownerIdx >= 0) return ownerIdx;
@@ -130,7 +124,7 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
 
   const contacts: ParsedRow[] = [];
   for (const row of data) {
-    const vals      = rawHeaders.map(h => (row[h] || '').trim());
+    const vals         = rawHeaders.map(h => (row[h] || '').trim());
     const ownerName    = nameColIdx >= 0     ? (vals[nameColIdx]     || 'Unknown') : 'Unknown';
     const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '')        : '';
     const unitNumber   = unitColIdx >= 0     ? (vals[unitColIdx]     || '')        : '';
@@ -146,19 +140,14 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   return { rows: contacts, mapping };
 };
 
-// ── Gemini personalisation ────────────────────────────────────────────────────
-
-// ── Local variation fallback (used when Gemini fails) ────────────────────────
-// Provides structural message variation without an API call.
-// Rotates greetings, transitions, and closings so messages are never identical
-// even if the AI rewrite step fails.
+// ── Local variation fallback ──────────────────────────────────────────────────
 
 const GREETING_VARIANTS = [
-  (name: string) => `Hi ${name},`,
-  (name: string) => `Hello ${name},`,
-  (name: string) => `Good day ${name},`,
-  (name: string) => `Dear ${name},`,
-  (name: string) => `Hi there ${name},`,
+  (name: string) => 'Hi ' + name + ',',
+  (name: string) => 'Hello ' + name + ',',
+  (name: string) => 'Good day ' + name + ',',
+  (name: string) => 'Dear ' + name + ',',
+  (name: string) => 'Hi there ' + name + ',',
 ];
 
 const CLOSING_VARIANTS = [
@@ -177,8 +166,6 @@ const TRANSITION_PAIRS: [string, string[]][] = [
 
 const applyLocalVariation = (message: string, index: number): string => {
   let varied = message;
-
-  // Rotate transition phrases deterministically per message index
   TRANSITION_PAIRS.forEach(([from, alternatives], vi) => {
     const lower = varied.toLowerCase();
     if (lower.includes(from.toLowerCase())) {
@@ -186,20 +173,16 @@ const applyLocalVariation = (message: string, index: number): string => {
       varied = varied.replace(new RegExp(from, 'i'), to);
     }
   });
-
-  // Append a rotating closing sentence if none already present
   const hasClosing = /looking forward|feel free|don.t hesitate|reach out|get in touch|happy to answer/i.test(varied);
   if (!hasClosing) {
     const closing = CLOSING_VARIANTS[index % CLOSING_VARIANTS.length];
     varied = varied.trimEnd() + '\n\n' + closing;
   }
-
   return varied;
 };
 
 // ── Gemini personalisation ────────────────────────────────────────────────────
 
-// Models tried in order. If one fails (404, quota exhausted) the next is used.
 const GEMINI_MODELS = [
   'gemini-2.0-flash',
   'gemini-1.5-flash',
@@ -219,85 +202,66 @@ const personaliseWithGemini = async (
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
+    const prompt = 'You are lightly personalising a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Make only small, natural tweaks so each message feels slightly different — swap a word or two, vary punctuation lightly, or change a minor phrase. Do NOT restructure sentences, change the meaning, add new content, or alter the tone. The output must be nearly identical to the input in length and structure. Preserve all placeholders exactly as written: {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}. Return only the message with no commentary or explanation.\n\nMessage to personalise:\n\n' + message;
+
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+      'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey,
       {
         method: 'POST',
         signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `You are rewriting a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Each recipient must receive a version that feels genuinely unique. Make bold, noticeable changes: restructure sentences significantly, use different vocabulary and phrasing throughout, change the opening and closing style entirely, vary the rhythm of the writing. Two rewrites of the same template must not look like the same message. Keep all meaning and key facts completely intact. Do NOT shorten or omit anything — the output must be similar in length to the input. Preserve all placeholders exactly as written: {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}. Return only the rewritten message with no commentary or explanation.\n\nMessage to rewrite:\n\n${message}`,
-            }],
-          }],
-          generationConfig: { temperature: 1.4 },
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4 },
         }),
       }
     );
     clearTimeout(timeoutId);
 
-    // Rate limited — exponential back-off then retry
     if (res.status === 429) {
       if (attempt < 3) {
         const backoff = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
-        console.warn(`[Gemini] 429 on ${model}, retrying in ${Math.round(backoff)}ms (attempt ${attempt + 1})`);
+        console.warn('[Gemini] 429 on ' + model + ', retrying in ' + Math.round(backoff) + 'ms');
         await sleep(backoff);
         return personaliseWithGemini(message, geminiKey, modelIndex, attempt + 1);
       }
       if (modelIndex + 1 < GEMINI_MODELS.length) {
-        console.warn(`[Gemini] Quota exhausted on ${model}, switching to ${GEMINI_MODELS[modelIndex + 1]}`);
         return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
       }
-      console.error('[Gemini] All models quota-limited — using local variation fallback');
       return { text: message, succeeded: false };
     }
 
-    // Model not available on this key/tier — try next
     if (res.status === 404 && modelIndex + 1 < GEMINI_MODELS.length) {
-      console.warn(`[Gemini] ${model} not found (404), trying ${GEMINI_MODELS[modelIndex + 1]}`);
       return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
     }
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.error(`[Gemini] HTTP ${res.status} from ${model}:`, body.slice(0, 400));
       return { text: message, succeeded: false };
     }
 
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
-    if (!text) {
-      const reason = data?.candidates?.[0]?.finishReason ?? 'unknown';
-      console.warn(`[Gemini] Empty response from ${model} — finishReason: ${reason}`);
-      return { text: message, succeeded: false };
-    }
+    if (!text) return { text: message, succeeded: false };
 
-    // Guard: if the message had placeholders, the rewrite must preserve them
     const hadPlaceholders = /\{\{[^}]+\}\}/.test(message);
     const keptPlaceholders = /\{\{[^}]+\}\}/.test(text);
     if (hadPlaceholders && !keptPlaceholders) {
-      console.warn('[Gemini] Rewrite stripped placeholders — discarding and using local variation');
       return { text: message, succeeded: false };
     }
 
     return { text, succeeded: true };
   } catch (err: any) {
-    const label = err?.name === 'AbortError' ? 'Timeout' : 'Error';
-    console.error(`[Gemini] ${label} on model ${model}:`, err?.message ?? err);
+    console.error('[Gemini] Error on ' + model + ':', err?.message ?? err);
     return { text: message, succeeded: false };
   }
 };
 
-/** Personalise all messages sequentially with rate-limit pacing.
- *  Falls back to local structural variation per message if Gemini fails. */
 const personaliseAllWithGemini = async (
   messages: string[],
   geminiKey: string,
   onProgress: (done: number, total: number) => void
 ): Promise<string[]> => {
-  // 800 ms between calls ≈ 75 RPM — well within paid-tier limits and safe for free tier
   const DELAY_MS = 800;
   const results: string[] = new Array(messages.length);
   let aiCount = 0;
@@ -316,7 +280,7 @@ const personaliseAllWithGemini = async (
     if (i < messages.length - 1) await sleep(DELAY_MS);
   }
 
-  console.log(`[Gemini] Complete — ${aiCount} AI rewrites, ${localCount} local-variation fallbacks`);
+  console.log('[Gemini] Complete — ' + aiCount + ' AI rewrites, ' + localCount + ' local-variation fallbacks');
   return results;
 };
 
@@ -340,7 +304,6 @@ const statusBadgeClass: Record<string, string> = {
 const UnitCollector = () => {
   const { user, profile } = useAuth();
 
-  // Upload form
   const [batchName, setBatchName]           = useState('');
   const [file, setFile]                     = useState<File | null>(null);
   const [fileMapping, setFileMapping]       = useState<ColumnMapping | null>(null);
@@ -354,27 +317,22 @@ const UnitCollector = () => {
   const [parsedRows, setParsedRows]         = useState<ParsedRow[] | null>(null);
   const [parseError, setParseError]         = useState<string | null>(null);
 
-  // Batches
   const [batches, setBatches]               = useState<any[]>([]);
   const [loading, setLoading]               = useState(true);
   const [cancelBatchId, setCancelBatchId]   = useState<string | null>(null);
   const [cancellingBatch, setCancellingBatch] = useState(false);
 
-  // Contact detail view
   const [viewingBatch, setViewingBatch]     = useState<string | null>(null);
   const [contacts, setContacts]             = useState<any[]>([]);
   const [filterStatus, setFilterStatus]     = useState('');
   const [filterAgent, setFilterAgent]       = useState('');
   const [loadingContacts, setLoadingContacts] = useState(false);
 
-  // Message preview / edit modal
   const [previewContact, setPreviewContact] = useState<any>(null);
   const [previewMessage, setPreviewMessage] = useState('');
   const [savingPreview, setSavingPreview]   = useState(false);
 
   const isAdmin = profile?.role === 'super_admin' || profile?.role === 'admin';
-
-  // ── Fetch ─────────────────────────────────────────────────────
 
   const fetchData = useCallback(async () => {
     if (!user) return;
@@ -421,7 +379,6 @@ const UnitCollector = () => {
       cancelledCount: cancelledCounts[b.id] || 0,
     }));
 
-    // Hide fully-cancelled batches (pending=0, sent=0)
     setBatches(mapped.filter((b: any) => b.pending_count > 0 || b.sent_count > 0));
 
     const defaultTpl = templatesRes.data?.find((t: any) => t.is_default);
@@ -430,8 +387,6 @@ const UnitCollector = () => {
   }, [isAdmin, user]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-
-  // ── File handling ─────────────────────────────────────────────
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] || null;
@@ -452,16 +407,12 @@ const UnitCollector = () => {
     }
   };
 
-  // ── Template substitution ─────────────────────────────────────
-
   const substituteTemplate = (template: string, row: ParsedRow, agentName: string): string =>
     template
       .replace(/\{\{owner_name\}\}/g,       row.owner_name    || '')
       .replace(/\{\{building_name\}\}/g,    row.building_name || '')
       .replace(/\{\{unit_number\}\}/g,      row.unit_number   || '')
       .replace(/\{\{agent_first_name\}\}/g, agentName);
-
-  // ── Upload ────────────────────────────────────────────────────
 
   const handleUpload = async () => {
     if (!batchName || !file || !selectedTemplate) { toast.error('Please fill all required fields'); return; }
@@ -477,21 +428,18 @@ const UnitCollector = () => {
       }
       if (!rows || rows.length === 0) { toast.error('File is empty or has no valid phone numbers'); setUploading(false); return; }
 
-      // Deduplicate by phone — keep first occurrence
       const seen = new Set<string>();
       const deduped = rows.filter(r => { if (seen.has(r.phone)) return false; seen.add(r.phone); return true; });
       const dupeCount = rows.length - deduped.length;
-      if (dupeCount > 0) toast.info(`Removed ${dupeCount} duplicate phone number${dupeCount > 1 ? 's' : ''} — each number will only receive one message.`);
+      if (dupeCount > 0) toast.info('Removed ' + dupeCount + ' duplicate phone number' + (dupeCount > 1 ? 's' : '') + ' — each number will only receive one message.');
       rows = deduped;
 
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
 
-      // Fetch Gemini key
       const { data: settings } = await supabase.from('api_settings').select('gemini_api_key').eq('id', 1).single();
       const geminiKey = settings?.gemini_api_key || '';
 
-      // Create batch record
       const { data: batch, error: batchError } = await supabase.from('batches').insert({
         batch_name:      batchName,
         uploaded_by:     user!.id,
@@ -506,11 +454,11 @@ const UnitCollector = () => {
 
       let finalMsgs: string[];
       if (geminiKey) {
-        setUploadProgress(`Connecting to Gemini AI — personalising messages (0 of ${rows.length})...`);
+        setUploadProgress('Personalising messages (' + 0 + ' of ' + rows.length + ')...');
         finalMsgs = await personaliseAllWithGemini(
           baseMsgs,
           geminiKey,
-          (done, total) => setUploadProgress(`Personalising messages with AI (${done} of ${total})...`)
+          (done, total) => setUploadProgress('Personalising messages (' + done + ' of ' + total + ')...')
         );
       } else {
         finalMsgs = baseMsgs;
@@ -531,7 +479,7 @@ const UnitCollector = () => {
       const { error: insertError } = await supabase.from('owner_contacts').insert(contactInserts);
       if (insertError) throw insertError;
 
-      toast.success(`${contactInserts.length} contacts added`);
+      toast.success(contactInserts.length + ' contacts added');
       setBatchName('');
       setFile(null);
       setFileMapping(null);
@@ -546,8 +494,6 @@ const UnitCollector = () => {
     }
     setUploading(false);
   };
-
-  // ── Contact detail ────────────────────────────────────────────
 
   const viewContacts = async (batchId: string) => {
     setViewingBatch(batchId);
@@ -564,8 +510,6 @@ const UnitCollector = () => {
     setLoadingContacts(false);
   };
 
-  // ── Batch cancel ──────────────────────────────────────────────
-
   const cancelBatch = async (batchId: string) => {
     setCancellingBatch(true);
     try {
@@ -576,7 +520,6 @@ const UnitCollector = () => {
         .eq('message_status', 'pending');
       if (error) throw error;
       await supabase.from('batches').update({ pending_count: 0 }).eq('id', batchId);
-      // Remove immediately from UI — do not call fetchData
       setBatches(prev => prev.filter(b => b.id !== batchId));
       setCancelBatchId(null);
       toast.success('Batch cancelled');
@@ -585,8 +528,6 @@ const UnitCollector = () => {
     }
     setCancellingBatch(false);
   };
-
-  // ── Contact actions ───────────────────────────────────────────
 
   const cancelContact = async (id: string) => {
     const contact = contacts.find(c => c.id === id);
@@ -606,8 +547,6 @@ const UnitCollector = () => {
     setContacts(prev => prev.map(c => c.id === id ? { ...c, message_status: 'pending' } : c));
     toast.success('Contact reset to pending');
   };
-
-  // ── Message preview / edit ────────────────────────────────────
 
   const openPreview = (c: any) => {
     setPreviewContact(c);
@@ -633,8 +572,6 @@ const UnitCollector = () => {
     setSavingPreview(false);
   };
 
-  // ── Helpers ───────────────────────────────────────────────────
-
   const filteredContacts = contacts.filter(c => {
     if (filterStatus && filterStatus !== 'all' && c.message_status !== filterStatus) return false;
     if (filterAgent && filterAgent !== 'all' && c.assigned_agent !== filterAgent) return false;
@@ -650,15 +587,11 @@ const UnitCollector = () => {
     }
   };
 
-  // ── Render guard ──────────────────────────────────────────────
-
   if (loading) return (
     <div className="flex items-center justify-center py-20">
       <Loader2 className="animate-spin w-8 h-8 text-primary" />
     </div>
   );
-
-  // ── Contact detail view ───────────────────────────────────────
 
   if (viewingBatch) {
     const batch = batches.find(b => b.id === viewingBatch);
@@ -716,15 +649,15 @@ const UnitCollector = () => {
                   {filteredContacts.map(c => (
                     <TableRow
                       key={c.id}
-                      className={`cursor-pointer hover:bg-muted/50 ${isPendingOrEditable(c) || c.message_status === 'sent' ? '' : 'opacity-60'}`}
+                      className={'cursor-pointer hover:bg-muted/50 ' + (isPendingOrEditable(c) || c.message_status === 'sent' ? '' : 'opacity-60')}
                       onClick={() => openPreview(c)}
                     >
                       <TableCell>{c.owner_name}</TableCell>
                       <TableCell>{c.building_name}</TableCell>
                       <TableCell className="font-mono text-sm">{c.number_1}</TableCell>
-                      {isAdmin && <TableCell>{c.agent_profile ? `${c.agent_profile.first_name} ${c.agent_profile.last_name}` : ''}</TableCell>}
+                      {isAdmin && <TableCell>{c.agent_profile ? c.agent_profile.first_name + ' ' + c.agent_profile.last_name : ''}</TableCell>}
                       <TableCell className="max-w-[180px] text-sm text-muted-foreground truncate">
-                        {c.generated_message?.slice(0, 60)}{(c.generated_message?.length || 0) > 60 ? '…' : ''}
+                        {c.generated_message?.slice(0, 60)}{(c.generated_message?.length || 0) > 60 ? '...' : ''}
                       </TableCell>
                       <TableCell>{getStatusBadge(c.message_status)}</TableCell>
                       <TableCell className="text-sm">{c.sent_at ? toUAETime(c.sent_at) : ''}</TableCell>
@@ -750,14 +683,11 @@ const UnitCollector = () => {
           </CardContent>
         </Card>
 
-        {/* Message Preview / Edit Modal */}
         <Dialog open={!!previewContact} onOpenChange={(open) => { if (!open) setPreviewContact(null); }}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>
-                {previewContact?.message_status === 'sent'
-                  ? 'Sent Message'
-                  : 'Preview and Edit Message'}
+                {previewContact?.message_status === 'sent' ? 'Sent Message' : 'Preview and Edit Message'}
               </DialogTitle>
             </DialogHeader>
 
@@ -809,12 +739,9 @@ const UnitCollector = () => {
     );
   }
 
-  // ── Main batches view ─────────────────────────────────────────
-
   return (
     <div className="space-y-8">
 
-      {/* Upload Form */}
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Upload className="w-5 h-5" /> Upload New Batch</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -828,21 +755,15 @@ const UnitCollector = () => {
             <Input type="file" accept=".csv,.xlsx,.xls" onChange={handleFileChange} className="mt-1" />
             <p className="text-xs text-muted-foreground mt-1">
               Accepts .csv and .xlsx. Must have at least one column with mobile, phone, or number in the header.
-              UAE local formats (05xxxxxxxx) and international numbers with country code (+44, +1, +966, etc.) are all supported.
-              Multiple phone columns are supported — each valid number creates a separate contact.
+              UAE local formats (05xxxxxxxx) and international numbers with country code are all supported.
             </p>
           </div>
 
-          {/* Column mapping preview */}
           {fileMapping && fileMappingPreview && !parseError && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm space-y-1">
               <p className="font-semibold text-blue-800">Detected column mapping:</p>
               <p className="text-blue-700">
-                Found <span className="font-semibold">{fileMapping.phoneColumns.length}</span> phone column{fileMapping.phoneColumns.length > 1 ? 's' : ''}:{' '}
-                <span className="font-mono">{fileMapping.phoneColumns.join(', ')}</span>
-                {fileMapping.phoneColumns.length > 1 && (
-                  <span> — will create up to {fileMapping.phoneColumns.length} contacts per row</span>
-                )}
+                Phone columns: <span className="font-mono">{fileMapping.phoneColumns.join(', ')}</span>
               </p>
               <p className="text-blue-700">Name column: <span className="font-mono">{fileMapping.nameColumn || 'none detected'}</span></p>
               <p className="text-blue-700">Building column: <span className="font-mono">{fileMapping.buildingColumn || 'none detected'}</span></p>
@@ -869,14 +790,13 @@ const UnitCollector = () => {
               if (!tmpl) return null;
               const len = (tmpl.body || '').length;
               return (
-                <p className={`text-xs mt-1 font-medium ${len > 255 ? 'text-red-500' : len > 200 ? 'text-amber-500' : 'text-green-600'}`}>
-                  {len} characters{len > 255 ? ' — ⚠️ over 255-char poll limit; messages will be truncated when sent as a poll' : len > 200 ? ' — approaching poll limit' : ' — poll-compatible ✓'}
+                <p className={'text-xs mt-1 font-medium ' + (len > 255 ? 'text-red-500' : len > 200 ? 'text-amber-500' : 'text-green-600')}>
+                  {len} characters{len > 255 ? ' — over 255-char limit; message will be truncated' : len > 200 ? ' — approaching 255-char limit' : ' — within limit'}
                 </p>
               );
             })()}
           </div>
 
-          {/* Poll toggle */}
           <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
             <Switch
               id="send-poll"
@@ -886,13 +806,12 @@ const UnitCollector = () => {
             />
             <div>
               <label htmlFor="send-poll" className="text-sm font-medium cursor-pointer">
-                Send interest poll after each message
+                Send reply buttons with outreach message
               </label>
               <p className="text-xs text-muted-foreground mt-0.5">
-                4–9 seconds after the outreach message, recipients receive a WhatsApp poll:
-                <span className="font-medium"> 🏠 Rent it out · 💰 Sell it · 📊 Send me market data · ❌ Remove me</span>.
-                Poll responses are routed automatically — opted-out numbers are suppressed forever,
-                rent/sell leads get a personalised Gemini follow-up, and market data requests trigger a report.
+                Recipients receive tap-to-reply buttons:
+                <span className="font-medium"> Rent it out · Sell it · Send me market data · Remove me</span>.
+                Responses are routed automatically — opted-out numbers are suppressed, rent/sell leads get a follow-up, and market data requests trigger a report.
               </p>
             </div>
           </div>
@@ -909,7 +828,6 @@ const UnitCollector = () => {
         </CardContent>
       </Card>
 
-      {/* Batches — Active / Completed tabs */}
       {(() => {
         const activeBatches    = batches.filter(b => b.pending_count > 0);
         const completedBatches = batches.filter(b => b.pending_count === 0 && b.sent_count > 0);
@@ -1004,11 +922,27 @@ const UnitCollector = () => {
         );
       })()}
 
-      {/* Cancel Batch Confirmation Modal */}
       <Dialog open={!!cancelBatchId} onOpenChange={() => setCancelBatchId(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Cancel Batch?</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">
             {cancelBatchId && (() => {
               const b = batches.find(b => b.id === cancelBatchId);
-              return `Cancel this batch
+              const count = b ? b.pending_count || 0 : 0;
+              return count + ' pending messages will not be sent. Are you sure?';
+            })()}
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setCancelBatchId(null)}>Keep Batch</Button>
+            <Button variant="destructive" onClick={() => cancelBatch(cancelBatchId!)} disabled={cancellingBatch}>
+              {cancellingBatch ? <Loader2 className="animate-spin mr-2 w-4 h-4" /> : null}
+              Yes, Cancel Batch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default UnitCollector;
