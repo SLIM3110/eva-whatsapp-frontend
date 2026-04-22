@@ -116,7 +116,22 @@ const Templates = () => {
               <TableBody>
                 {templates.map(t => (
                   <TableRow key={t.id}>
-                    <TableCell className="font-medium">{t.template_name}</TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        {t.template_name}
+                        <span
+                          className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${
+                            toFriendly(t.body).length > 255
+                              ? 'bg-red-100 text-red-600'
+                              : toFriendly(t.body).length > 200
+                              ? 'bg-amber-100 text-amber-600'
+                              : 'bg-green-100 text-green-700'
+                          }`}
+                        >
+                          {toFriendly(t.body).length}c
+                        </span>
+                      </div>
+                    </TableCell>
                     <TableCell className="max-w-[300px] text-sm truncate">{toFriendly(t.body)}</TableCell>
                     <TableCell>
                       {t.is_default ? (
@@ -149,21 +164,4 @@ const Templates = () => {
           <div className="space-y-4">
             <div>
               <label className="text-sm font-medium">Template Name</label>
-              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="e.g. Standard Introduction" className="mt-1" />
-            </div>
-            <div>
-              <label className="text-sm font-medium">Message Body</label>
-              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi [Owner Name], I'm [Agent Name] from EVA..." rows={6} className="mt-1" />
-            </div>
-            <Button onClick={handleSave} disabled={saving} className="w-full">
-              {saving ? <Loader2 className="animate-spin mr-2" /> : null}
-              {editingId ? 'Update Template' : 'Create Template'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-export default Templates;
+              <Input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="e.g.
