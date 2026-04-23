@@ -157,44 +157,220 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   return { rows: contacts, mapping };
 };
 
-// ── Local variation fallback ──────────────────────────────────────────────────
+// ── Local variation engine ────────────────────────────────────────────────────
+// Produces genuinely distinct text per message to avoid WhatsApp spam
+// fingerprinting identical bulk sends.
+//
+// Design rules:
+//  • Fully deterministic — same (message, index) always gives same output
+//  • Never touches proper nouns, numbers, or placeholders
+//  • Meaning and tone are preserved exactly — only phrasing changes
+//  • No AI involved
 
-const GREETING_VARIANTS = [
-  (name: string) => 'Hi ' + name + ',',
-  (name: string) => 'Hello ' + name + ',',
-  (name: string) => 'Good day ' + name + ',',
-  (name: string) => 'Dear ' + name + ',',
-  (name: string) => 'Hi there ' + name + ',',
+// Pick one alternative from an array, driven by index + a per-swap salt so
+// different swaps don't all move in lockstep.
+const _pick = (alts: string[], index: number, salt: number): string =>
+  alts[(index + salt) % alts.length];
+
+// ── Greeting rotation ─────────────────────────────────────────────────────────
+// Matches the first word of the message if it's a greeting word.
+const GREETING_SWAPS: [RegExp, string[]][] = [
+  [/^Hi/m,        ['Hi', 'Hello', 'Hey', 'Good day']],
+  [/^Hello/m,     ['Hello', 'Hi', 'Good day', 'Hey']],
+  [/^Hey/m,       ['Hey', 'Hi', 'Hello', 'Good day']],
+  [/^Dear/m,      ['Dear', 'Hi', 'Hello']],
+  [/^Good day/m,  ['Good day', 'Hello', 'Hi', 'Hey']],
+  [/^Good morning/m, ['Good morning', 'Good day', 'Hello', 'Hi']],
+  [/^Good afternoon/m, ['Good afternoon', 'Good day', 'Hello', 'Hi']],
 ];
 
+// ── Synonym swap table ────────────────────────────────────────────────────────
+// Each entry: [pattern, alternatives[]].
+// Patterns match phrases commonly used in real-estate outreach templates.
+// Alternatives are semantically equivalent and natural-sounding.
+const SYNONYM_SWAPS: [RegExp, string[]][] = [
+  // Reach-out openers
+  [/I wanted to reach out/gi,
+    ['I am reaching out', 'I wanted to get in touch', 'I thought to connect with you', 'I am writing to you']],
+  [/I am reaching out/gi,
+    ['I wanted to reach out', 'I wanted to get in touch', 'I am contacting you', 'I thought to connect']],
+  [/I wanted to get in touch/gi,
+    ['I am reaching out', 'I wanted to reach out', 'I thought to connect', 'I am writing to you']],
+  [/I thought to get in touch/gi,
+    ['I wanted to reach out', 'I am reaching out', 'I wanted to connect']],
+  [/I am writing to you/gi,
+    ['I wanted to reach out', 'I am reaching out', 'I wanted to get in touch']],
+
+  // Polite call-to-action phrases
+  [/please feel free to/gi,
+    ['please do not hesitate to', 'you are welcome to', 'feel free to', 'please go ahead and']],
+  [/feel free to/gi,
+    ['please do not hesitate to', 'please feel free to', 'you are welcome to']],
+  [/do not hesitate to/gi,
+    ['feel free to', 'please feel free to', 'you are welcome to', 'go ahead and']],
+  [/don't hesitate to/gi,
+    ['feel free to', 'please feel free to', 'you are welcome to']],
+
+  // Convenience / timing phrases
+  [/at your earliest convenience/gi,
+    ['whenever suits you', 'at a time that works for you', 'whenever you are free', 'when you get a chance']],
+  [/whenever suits you/gi,
+    ['at your earliest convenience', 'when it works for you', 'whenever you are free', 'at a time that suits you']],
+  [/at a time that works for you/gi,
+    ['whenever suits you', 'at your earliest convenience', 'whenever you are free']],
+  [/when you get a chance/gi,
+    ['whenever suits you', 'at your earliest convenience', 'when it suits you']],
+
+  // Willingness phrases
+  [/would love to/gi,
+    ['would be happy to', 'would be glad to', 'would like to']],
+  [/would be happy to/gi,
+    ['would love to', 'would be glad to', 'would like to']],
+  [/would be glad to/gi,
+    ['would love to', 'would be happy to', 'would like to']],
+  [/I'd love to/gi,
+    ['I'd be happy to', 'I would be glad to', 'I would like to']],
+  [/I'd be happy to/gi,
+    ['I'd love to', 'I would be glad to', 'I would like to']],
+
+  // Call / meeting phrases
+  [/a quick call/gi,
+    ['a brief call', 'a quick chat', 'a short call', 'a brief chat']],
+  [/a brief call/gi,
+    ['a quick call', 'a short chat', 'a quick chat', 'a brief conversation']],
+  [/a quick chat/gi,
+    ['a quick call', 'a brief call', 'a brief chat', 'a short conversation']],
+  [/a short call/gi,
+    ['a quick call', 'a brief call', 'a quick chat']],
+  [/a 5.minute call/gi,
+    ['a quick call', 'a brief 5-minute chat', 'a short call']],
+
+  // Follow-up / response phrases
+  [/let me know/gi,
+    ['do let me know', 'feel free to let me know', 'drop me a message']],
+  [/get back to me/gi,
+    ['reach out', 'let me know', 'drop me a message']],
+  [/reach out to me/gi,
+    ['get in touch', 'drop me a message', 'let me know']],
+
+  // Closing pleasantries
+  [/I look forward to hearing from you/gi,
+    ['Looking forward to your response', 'I hope to hear from you soon', 'Looking forward to connecting']],
+  [/Looking forward to hearing from you/gi,
+    ['I look forward to your response', 'Hope to hear from you soon', 'Looking forward to connecting']],
+  [/I hope to hear from you soon/gi,
+    ['Looking forward to hearing from you', 'I look forward to connecting', 'Hope to connect soon']],
+  [/I look forward to connecting/gi,
+    ['Looking forward to hearing from you', 'I hope to hear from you soon', 'Looking forward to your response']],
+
+  // Opener pleasantries (if agent uses them)
+  [/I hope this message finds you well/gi,
+    ['I hope you are doing well', 'I trust you are keeping well', 'Hope all is well with you']],
+  [/I hope you are doing well/gi,
+    ['I hope this message finds you well', 'I trust you are keeping well', 'Hope all is well']],
+  [/I trust you are keeping well/gi,
+    ['I hope you are doing well', 'I hope this message finds you well', 'Hope all is well']],
+  [/Hope all is well/gi,
+    ['I hope you are doing well', 'I hope this message finds you well', 'I trust you are well']],
+
+  // Awareness phrases
+  [/As you may know/gi,
+    ['As you may be aware', 'You may already know that', 'As you might know']],
+  [/As you may be aware/gi,
+    ['As you may know', 'You might already know', 'As you might be aware']],
+
+  // Time words
+  [/shortly/gi,
+    ['soon', 'in the coming days', 'before long']],
+  [/soon/gi,
+    ['shortly', 'in the coming days', 'before long']],
+  [/this week/gi,
+    ['in the coming days', 'over the next few days', 'this week']],
+  [/in the coming days/gi,
+    ['shortly', 'soon', 'over the next few days']],
+
+  // Common real-estate phrases
+  [/the current market/gi,
+    ['today's market', 'the present market', 'the current market conditions']],
+  [/today's market/gi,
+    ['the current market', 'the present market', 'the market right now']],
+  [/market conditions/gi,
+    ['market trends', 'market dynamics', 'market conditions']],
+  [/market value/gi,
+    ['market price', 'current value', 'market value']],
+  [/great opportunity/gi,
+    ['excellent opportunity', 'fantastic opportunity', 'a strong opportunity']],
+  [/excellent opportunity/gi,
+    ['great opportunity', 'fantastic opportunity', 'a strong opportunity']],
+  [/strong demand/gi,
+    ['high demand', 'solid demand', 'strong demand']],
+  [/high demand/gi,
+    ['strong demand', 'solid demand', 'high demand']],
+];
+
+// ── Closing variants (appended if message has no natural closing) ──────────────
 const CLOSING_VARIANTS = [
   'Looking forward to connecting with you.',
   'I look forward to hearing from you.',
   'Please feel free to reach out at any time.',
   'Do not hesitate to get in touch.',
   'Happy to answer any questions you may have.',
+  'Hope to hear from you soon.',
+  'Feel free to message me anytime.',
+  'Happy to have a quick chat whenever suits you.',
+  'I look forward to speaking with you.',
+  'Reach out anytime — happy to help.',
 ];
 
-const TRANSITION_PAIRS: [string, string[]][] = [
-  ['I wanted to reach out', ['I am reaching out', 'I would like to connect', 'I thought to get in touch']],
-  ['please feel free', ['please do not hesitate', 'you are welcome']],
-  ['at your earliest convenience', ['whenever suits you', 'at a time that works for you', 'whenever you are free']],
-];
+// ── Micro punctuation nudges ──────────────────────────────────────────────────
+// Small structural differences that change the byte-level fingerprint.
+const applyMicroVariation = (text: string, index: number): string => {
+  // Alternate between em-dash and hyphen in mid-sentence dashes
+  if (index % 2 === 0) {
+    text = text.replace(/ — /g, ' - ');
+  } else {
+    text = text.replace(/ - /g, ' — ');
+  }
+  // Every 3rd message: strip the Oxford comma before "and" where safe
+  if (index % 3 === 0) {
+    text = text.replace(/, and /g, ' and ');
+  }
+  // Every 5th message: replace "can't" / "don't" with "cannot" / "do not" (or vice versa)
+  if (index % 5 < 2) {
+    text = text.replace(/\bcan't\b/gi, 'cannot').replace(/\bdon't\b/gi, 'do not');
+  } else if (index % 5 >= 3) {
+    text = text.replace(/\bcannot\b/gi, "can't").replace(/\bdo not\b/gi, "don't");
+  }
+  return text;
+};
 
 const applyLocalVariation = (message: string, index: number): string => {
   let varied = message;
-  TRANSITION_PAIRS.forEach(([from, alternatives], vi) => {
-    const lower = varied.toLowerCase();
-    if (lower.includes(from.toLowerCase())) {
-      const to = alternatives[(index + vi) % alternatives.length];
-      varied = varied.replace(new RegExp(from, 'i'), to);
+
+  // 1. Rotate greeting word if the message opens with one
+  for (const [pattern, alts] of GREETING_SWAPS) {
+    if (pattern.test(varied)) {
+      varied = varied.replace(pattern, _pick(alts, index, 0));
+      break; // only swap the first matched greeting
+    }
+  }
+
+  // 2. Swap synonyms — each entry gets its own salt so choices don't lock-step
+  SYNONYM_SWAPS.forEach(([pattern, alts], salt) => {
+    if (pattern.test(varied)) {
+      varied = varied.replace(pattern, _pick(alts, index, salt + 1));
     }
   });
-  const hasClosing = /looking forward|feel free|don.t hesitate|reach out|get in touch|happy to answer/i.test(varied);
+
+  // 3. Append a closing sentence if the message doesn't already have one
+  const hasClosing = /looking forward|feel free|don.?t hesitate|reach out|get in touch|happy to|hear from you|message me|speak with you/i.test(varied);
   if (!hasClosing) {
-    const closing = CLOSING_VARIANTS[index % CLOSING_VARIANTS.length];
-    varied = varied.trimEnd() + '\n\n' + closing;
+    varied = varied.trimEnd() + '\n\n' + _pick(CLOSING_VARIANTS, index, 11);
   }
+
+  // 4. Apply micro punctuation variations
+  varied = applyMicroVariation(varied, index);
+
   return varied;
 };
 
