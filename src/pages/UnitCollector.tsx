@@ -310,6 +310,7 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [sendButtons, setSendButtons]           = useState(true);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -444,6 +445,7 @@ const UnitCollector = () => {
         uploaded_by:     user!.id,
         total_contacts:  rows.length,
         pending_count:   rows.length,
+        send_poll:       sendButtons,
       }).select().single();
       if (batchError) throw batchError;
 
@@ -484,6 +486,7 @@ const UnitCollector = () => {
       setFileMappingPreview(false);
       setParsedRows(null);
       setUploadProgress('');
+      setSendButtons(true);
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
@@ -792,6 +795,27 @@ const UnitCollector = () => {
                 </p>
               );
             })()}
+          </div>
+
+          {/* Reply buttons toggle */}
+          <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
+            <Switch
+              id="send-buttons"
+              checked={sendButtons}
+              onCheckedChange={setSendButtons}
+              className="mt-0.5"
+            />
+            <div>
+              <label htmlFor="send-buttons" className="text-sm font-medium cursor-pointer">
+                Send reply buttons with outreach message
+              </label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Recipients receive 3 tap-to-reply buttons:
+                <span className="font-medium"> Sell &middot; Rent &middot; Not interested</span>.
+                Responses are handled automatically — opted-out numbers are suppressed,
+                and interested owners get a personalised follow-up.
+              </p>
+            </div>
           </div>
 
           <div className="space-y-2">
