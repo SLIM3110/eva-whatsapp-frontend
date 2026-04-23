@@ -7,10 +7,15 @@ const PLACEHOLDER_MAP = [
   { raw: '{{agent_first_name}}', friendly: '[Agent Name]'   },
 ] as const;
 
-/** Convert stored raw {{placeholders}} → friendly [Labels] for display */
+/** Convert stored raw {{placeholders}} to friendly [Labels] for display */
 export const toFriendly = (text: string): string =>
   PLACEHOLDER_MAP.reduce((t, p) => t.split(p.raw).join(p.friendly), text);
 
-/** Convert friendly [Labels] → raw {{placeholders}} before saving to Supabase */
+/** Convert friendly [Labels] to raw {{placeholders}} before saving to Supabase.
+ *  Case-insensitive so [owner name], [Owner Name], [OWNER NAME] all work. */
 export const toRaw = (text: string): string =>
-  PLACEHOLDER_MAP.reduce((t, p) => t.split(p.friendly).join(p.raw), text);
+  PLACEHOLDER_MAP.reduce((t, p) => {
+    // Escape the friendly label for use in regex, then replace case-insensitively
+    const escaped = p.friendly.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return t.replace(new RegExp(escaped, 'gi'), p.raw);
+  }, text);
