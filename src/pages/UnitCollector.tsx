@@ -128,7 +128,9 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   );
   const unitColIdx = headers.findIndex(h =>
     h.includes('unit') || h.includes('apartment') || h.includes('flat') ||
-    h.includes('apt') || h.includes('room') || h.includes('suite') || h.includes('no.')
+    h.includes('apt') || h.includes('room') || h.includes('suite') ||
+    h.includes('no.') || h === 'no' || h.includes('number') || h.includes('ref') ||
+    h.includes('#') || h.includes('plot')
   );
 
   const mapping: ColumnMapping = {
@@ -435,7 +437,12 @@ const UnitCollector = () => {
     let t = template;
     t = subAll(t, ['{{owner_name}}', '[Owner Name]', '(Owner Name)', '[owner name]', '(owner name)', '{{owner name}}'], row.owner_name || '');
     t = subAll(t, ['{{building_name}}', '[Building Name]', '(Building Name)', '[building name]', '(building name)', '{{building name}}'], row.building_name || '');
-    t = subAll(t, ['{{unit_number}}', '[Unit Number]', '(Unit Number)', '[unit number]', '(unit number)', '[Unit No]', '(Unit No)', '{{unit number}}'], row.unit_number || '');
+    t = subAll(t, [
+      '{{unit_number}}', '[Unit Number]', '(Unit Number)', '[unit number]', '(unit number)',
+      '[Unit No]', '(Unit No)', '{{unit number}}', '[Unit No.]', '(Unit No.)',
+      '[Apt No]', '(Apt No)', '[Apt Number]', '(Apt Number)',
+      '[unit no]', '(unit no)', '[unit #]', '(unit #)', '[Unit #]', '(Unit #)',
+    ], row.unit_number || '');
     t = subAll(t, ['{{agent_first_name}}', '[Agent Name]', '(Agent Name)', '[agent name]', '(agent name)', '[Agent First Name]', '{{agent first name}}'], agentName || '');
     return t;
   };
@@ -463,9 +470,6 @@ const UnitCollector = () => {
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
 
-      const { data: settings } = await supabase.from('api_settings').select('gemini_api_key').eq('id', 1).single();
-      const geminiKey = settings?.gemini_api_key || '';
-
       const { data: batch, error: batchError } = await supabase.from('batches').insert({
         batch_name:      batchName,
         uploaded_by:     user!.id,
@@ -478,17 +482,8 @@ const UnitCollector = () => {
       const agentName = profile?.first_name || '';
       const baseMsgs = rows.map(r => substituteTemplate(template.body, r, agentName));
 
-      let finalMsgs: string[];
-      if (geminiKey) {
-        setUploadProgress('Personalising messages (' + 0 + ' of ' + rows.length + ')...');
-        finalMsgs = await personaliseAllWithGemini(
-          baseMsgs,
-          geminiKey,
-          (done, total) => setUploadProgress('Personalising messages (' + done + ' of ' + total + ')...')
-        );
-      } else {
-        finalMsgs = baseMsgs;
-      }
+      // Apply light local variation (word-swap only — no AI rewriting)
+      const finalMsgs: string[] = baseMsgs.map((msg, i) => applyLocalVariation(msg, i));
 
       const contactInserts: any[] = rows.map((r, i) => ({
         uploaded_batch_id: batch.id,
