@@ -790,8 +790,8 @@ const UnitCollector = () => {
               if (!tmpl) return null;
               const len = (tmpl.body || '').length;
               return (
-                <p className={'text-xs mt-1 font-medium ' + (len > 255 ? 'text-red-500' : len > 200 ? 'text-amber-500' : 'text-green-600')}>
-                  {len} characters{len > 255 ? ' — over 255-char limit; message will be truncated' : len > 200 ? ' — approaching 255-char limit' : ' — within limit'}
+                <p className={'text-xs mt-1 font-medium ' + (len > 1024 ? 'text-red-500' : len > 600 ? 'text-amber-500' : 'text-green-600')}>
+                  {len} characters{len > 1024 ? ' — ⚠️ very long; consider shortening' : len > 600 ? ' — getting long, keep it concise' : ' — good length'}
                 </p>
               );
             })()}
