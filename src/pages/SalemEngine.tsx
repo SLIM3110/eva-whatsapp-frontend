@@ -12,7 +12,7 @@ const SalemEngine = () => {
         </CardHeader>
         <CardContent>
           <p className="text-muted-foreground">
-            Salem Engine is an automated follow-up sequence system that manages off-plan lead nurturing
+            EVA Engine is an automated follow-up sequence system that manages off-plan lead nurturing
             with timed message sequences on Day 1, Day 3, and Day 7. It tracks reply rates, manages
             opt-outs, and automatically pauses sequences when leads respond.
           </p>
