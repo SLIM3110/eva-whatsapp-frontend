@@ -310,7 +310,6 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [sendPoll, setSendPoll]             = useState(true);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -445,7 +444,6 @@ const UnitCollector = () => {
         uploaded_by:     user!.id,
         total_contacts:  rows.length,
         pending_count:   rows.length,
-        send_poll:       sendPoll,
       }).select().single();
       if (batchError) throw batchError;
 
@@ -486,7 +484,6 @@ const UnitCollector = () => {
       setFileMappingPreview(false);
       setParsedRows(null);
       setUploadProgress('');
-      setSendPoll(true);
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
