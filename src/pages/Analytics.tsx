@@ -7,7 +7,7 @@ import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { BarChart3, Loader2, Clock } from 'lucide-react';
 
-type DateRange = '7d' | '30d' | 'all';
+type DateRange = '24h' | '7d' | '30d' | 'all';
 
 type AgentStats = {
   id: string;
@@ -31,7 +31,11 @@ type AdminGroup = {
 const dateRangeStart = (range: DateRange): string | null => {
   if (range === 'all') return null;
   const d = new Date();
-  d.setDate(d.getDate() - (range === '7d' ? 7 : 30));
+  if (range === '24h') {
+    d.setHours(d.getHours() - 24);
+  } else {
+    d.setDate(d.getDate() - (range === '7d' ? 7 : 30));
+  }
   return d.toISOString();
 };
 
@@ -207,6 +211,7 @@ const Analytics = () => {
         <Select value={range} onValueChange={v => setRange(v as DateRange)}>
           <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
           <SelectContent>
+            <SelectItem value="24h">Last 24 hours</SelectItem>
             <SelectItem value="7d">Last 7 days</SelectItem>
             <SelectItem value="30d">Last 30 days</SelectItem>
             <SelectItem value="all">All time</SelectItem>
