@@ -407,31 +407,6 @@ const TO_DIGITS: [RegExp, string][] = [
 ];
 
 // ── Floating context sentences ────────────────────────────────────────────────
-// Generic Dubai market sentences inserted between paragraphs to increase
-// message length and structural uniqueness. Picked deterministically.
-const FLOATING_SENTENCES = [
-  'The Dubai property market has seen consistent demand from both local and international buyers.',
-  'Rental yields in Dubai remain among the highest globally, attracting strong investor interest.',
-  "With Expo City's legacy and continued infrastructure development, property values in many communities have held firm.",
-  'Demand for well-located residential units in Dubai has remained resilient across market cycles.',
-  'Many property owners in Dubai are finding this to be an opportune moment to review their options.',
-  'The secondary market in Dubai has been particularly active in recent months.',
-  "Dubai's property market continues to draw interest from investors across the region and beyond.",
-  "With no property tax and strong rental demand, Dubai remains one of the world's most attractive markets.",
-  'Transactional volumes in Dubai have been on a steady upward trend over the past year.',
-  'The strong pipeline of new residents and businesses moving to Dubai continues to support demand.',
-  "Rental prices in many of Dubai's established communities have seen upward movement this year.",
-  'Long-term ownership trends in Dubai point to continued capital appreciation in well-located areas.',
-  'Many savvy investors and homeowners are actively reviewing their real estate positions right now.',
-  "Dubai's transparent property laws and freehold ownership rules continue to attract global interest.",
-  'As the city grows and infrastructure matures, well-located units tend to benefit the most.',
-  "The combination of a strong economy and population growth underpins Dubai's property fundamentals.",
-  'Off-plan completions in recent years have added quality stock while demand has kept pace.',
-  'Real estate remains one of the most popular asset classes among high-net-worth individuals in the UAE.',
-  "Dubai's status as a global business hub continues to underpin strong demand for quality residential units.",
-  "Owners who engage with the market now are often better positioned to capitalise on the city's growth trajectory.",
-];
-
 // ── P.S. pool ─────────────────────────────────────────────────────────────────
 const PS_LINES = [
   'P.S. If you would like a free valuation of your unit, I am happy to arrange one — no cost, no obligation.',
@@ -474,9 +449,6 @@ const CLOSING_VARIANTS = [
   'Here whenever you need me.',
 ];
 
-// Minimum character length — ensures there is enough text to vary meaningfully
-const MIN_MESSAGE_LENGTH = 320;
-
 const applyLocalVariation = (message: string, index: number): string => {
   let varied = message;
 
@@ -509,33 +481,18 @@ const applyLocalVariation = (message: string, index: number): string => {
     TO_DIGITS.forEach(([pat, digit]) => { varied = varied.replace(pat, digit); });
   }
 
-  // 5. Pad to minimum length — insert floating market sentences between paragraphs
-  const paras = varied.split(/\n\n+/);
-  let padCount = 0;
-  while (varied.length < MIN_MESSAGE_LENGTH && padCount < 3) {
-    const sentence = _pick(FLOATING_SENTENCES, index, 50 + padCount);
-    // Insert after the first paragraph so the opening stays intact
-    if (paras.length > 1) {
-      paras.splice(1 + padCount, 0, sentence);
-    } else {
-      paras.push(sentence);
-    }
-    varied = paras.join('\n\n');
-    padCount++;
-  }
-
-  // 6. Append a closing if the message does not already have one
+  // 5. Append a closing if the message does not already have one
   const hasClosing = /looking forward|feel free|don.?t hesitate|reach out|get in touch|happy to|hear from you|message me|speak with you|here whenever|stay in touch/i.test(varied);
   if (!hasClosing) {
     varied = varied.trimEnd() + '\n\n' + _pick(CLOSING_VARIANTS, index, 11);
   }
 
-  // 7. P.S. line — appears on ~45% of messages
+  // 6. P.S. line — appears on ~45% of messages
   if (_chance(index, 99, 45)) {
     varied = varied.trimEnd() + '\n\n' + _pick(PS_LINES, index, 77);
   }
 
-  // 8. Micro punctuation nudges — em-dash vs hyphen alternation
+  // 7. Micro punctuation nudges — em-dash vs hyphen alternation
   if (index % 2 === 0) {
     varied = varied.replace(/ — /g, ' - ');
   } else {
@@ -545,109 +502,6 @@ const applyLocalVariation = (message: string, index: number): string => {
   return varied;
 };
 
-
-// ── Gemini personalisation ────────────────────────────────────────────────────
-
-const GEMINI_MODELS = [
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-2.0-flash-lite',
-];
-
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-
-const personaliseWithGemini = async (
-  message: string,
-  geminiKey: string,
-  modelIndex = 0,
-  attempt = 0
-): Promise<{ text: string; succeeded: boolean }> => {
-  const model = GEMINI_MODELS[modelIndex] ?? GEMINI_MODELS[0];
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-
-    const prompt = 'You are lightly personalising a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Make only small, natural tweaks so each message feels slightly different — swap a word or two, vary punctuation lightly, or change a minor phrase. Do NOT restructure sentences, change the meaning, add new content, or alter the tone. The output must be nearly identical to the input in length and structure. CRITICAL: Do NOT change, remove, or paraphrase any proper nouns — especially people names, building names, unit numbers, or agent names. If the message contains a name like Ahmed or a building like Marina Gate, keep it exactly as is. Return only the message text with no commentary, labels, or explanation.\n\nMessage:\n\n' + message;
-
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey,
-      {
-        method: 'POST',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4 },
-        }),
-      }
-    );
-    clearTimeout(timeoutId);
-
-    if (res.status === 429) {
-      if (attempt < 3) {
-        const backoff = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
-        console.warn('[Gemini] 429 on ' + model + ', retrying in ' + Math.round(backoff) + 'ms');
-        await sleep(backoff);
-        return personaliseWithGemini(message, geminiKey, modelIndex, attempt + 1);
-      }
-      if (modelIndex + 1 < GEMINI_MODELS.length) {
-        return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
-      }
-      return { text: message, succeeded: false };
-    }
-
-    if (res.status === 404 && modelIndex + 1 < GEMINI_MODELS.length) {
-      return personaliseWithGemini(message, geminiKey, modelIndex + 1, 0);
-    }
-
-    if (!res.ok) {
-      return { text: message, succeeded: false };
-    }
-
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-    if (!text) return { text: message, succeeded: false };
-
-    const hadPlaceholders = /\{\{[^}]+\}\}/.test(message);
-    const keptPlaceholders = /\{\{[^}]+\}\}/.test(text);
-    if (hadPlaceholders && !keptPlaceholders) {
-      return { text: message, succeeded: false };
-    }
-
-    return { text, succeeded: true };
-  } catch (err: any) {
-    console.error('[Gemini] Error on ' + model + ':', err?.message ?? err);
-    return { text: message, succeeded: false };
-  }
-};
-
-const personaliseAllWithGemini = async (
-  messages: string[],
-  geminiKey: string,
-  onProgress: (done: number, total: number) => void
-): Promise<string[]> => {
-  const DELAY_MS = 800;
-  const results: string[] = new Array(messages.length);
-  let aiCount = 0;
-  let localCount = 0;
-
-  for (let i = 0; i < messages.length; i++) {
-    const { text, succeeded } = await personaliseWithGemini(messages[i], geminiKey);
-    if (succeeded) {
-      results[i] = text;
-      aiCount++;
-    } else {
-      results[i] = applyLocalVariation(messages[i], i);
-      localCount++;
-    }
-    onProgress(i + 1, messages.length);
-    if (i < messages.length - 1) await sleep(DELAY_MS);
-  }
-
-  console.log('[Gemini] Complete — ' + aiCount + ' AI rewrites, ' + localCount + ' local-variation fallbacks');
-  return results;
-};
 
 // ── Batch status helper ───────────────────────────────────────────────────────
 
