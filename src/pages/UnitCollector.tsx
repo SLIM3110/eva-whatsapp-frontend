@@ -794,25 +794,6 @@ const UnitCollector = () => {
             })()}
           </div>
 
-          <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
-            <Switch
-              id="send-poll"
-              checked={sendPoll}
-              onCheckedChange={setSendPoll}
-              className="mt-0.5"
-            />
-            <div>
-              <label htmlFor="send-poll" className="text-sm font-medium cursor-pointer">
-                Send reply buttons with outreach message
-              </label>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Recipients receive tap-to-reply buttons:
-                <span className="font-medium"> Rent it out · Sell it · Send me market data · Remove me</span>.
-                Responses are routed automatically — opted-out numbers are suppressed, rent/sell leads get a follow-up, and market data requests trigger a report.
-              </p>
-            </div>
-          </div>
-
           <div className="space-y-2">
             <Button onClick={handleUpload} disabled={uploading || !!parseError} className="w-full sm:w-auto">
               {uploading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
