@@ -171,7 +171,7 @@ const _hash = (n: number, salt: number): number => {
   h = ((h >>> 16) ^ h) >>> 0;
   return h;
 };
-const _pick = <T>(arr: T[], index: number, salt: number): T =>
+const _pick = <T,>(arr: T[], index: number, salt: number): T =>
   arr[_hash(index, salt) % arr.length];
 const _chance = (index: number, salt: number, pct: number): boolean =>
   (_hash(index, salt) % 100) < pct;
