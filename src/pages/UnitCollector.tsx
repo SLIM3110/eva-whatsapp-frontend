@@ -109,12 +109,27 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   }
 
   const nameColIdx = (() => {
-    const ownerIdx = headers.findIndex(h => h.includes('owner'));
-    if (ownerIdx >= 0) return ownerIdx;
-    return headers.findIndex(h => h.includes('name') && !h.includes('building') && !h.includes('project') && !h.includes('tower'));
+    // Priority: columns explicitly about the owner/client/landlord
+    const priority = headers.findIndex(h =>
+      h.includes('owner') || h.includes('client') || h.includes('landlord') ||
+      h.includes('contact') || h.includes('fullname') || h.includes('full name')
+    );
+    if (priority >= 0) return priority;
+    // Fallback: any 'name' column that isn't a building/project/tower
+    return headers.findIndex(h =>
+      h.includes('name') &&
+      !h.includes('building') && !h.includes('project') &&
+      !h.includes('tower') && !h.includes('company') && !h.includes('firm')
+    );
   })();
-  const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
-  const unitColIdx     = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
+  const buildingColIdx = headers.findIndex(h =>
+    h.includes('building') || h.includes('tower') || h.includes('property') ||
+    h.includes('project') || h.includes('community') || h.includes('development')
+  );
+  const unitColIdx = headers.findIndex(h =>
+    h.includes('unit') || h.includes('apartment') || h.includes('flat') ||
+    h.includes('apt') || h.includes('room') || h.includes('suite') || h.includes('no.')
+  );
 
   const mapping: ColumnMapping = {
     phoneColumns:   phoneColIndexes.map(i => rawHeaders[i]),
@@ -125,7 +140,7 @@ const parseFileToRows = async (file: File): Promise<{ rows: ParsedRow[]; mapping
   const contacts: ParsedRow[] = [];
   for (const row of data) {
     const vals         = rawHeaders.map(h => (row[h] || '').trim());
-    const ownerName    = nameColIdx >= 0     ? (vals[nameColIdx]     || 'Unknown') : 'Unknown';
+    const ownerName    = nameColIdx >= 0     ? (vals[nameColIdx]     || '') : '';
     const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '')        : '';
     const unitNumber   = unitColIdx >= 0     ? (vals[unitColIdx]     || '')        : '';
 
@@ -202,7 +217,7 @@ const personaliseWithGemini = async (
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
-    const prompt = 'You are lightly personalising a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Make only small, natural tweaks so each message feels slightly different — swap a word or two, vary punctuation lightly, or change a minor phrase. Do NOT restructure sentences, change the meaning, add new content, or alter the tone. The output must be nearly identical to the input in length and structure. Preserve all placeholders exactly as written: {{owner_name}}, {{building_name}}, {{unit_number}}, {{agent_first_name}}. Return only the message with no commentary or explanation.\n\nMessage to personalise:\n\n' + message;
+    const prompt = 'You are lightly personalising a WhatsApp outreach message for a real estate agent at EVA Real Estate in Dubai. Make only small, natural tweaks so each message feels slightly different — swap a word or two, vary punctuation lightly, or change a minor phrase. Do NOT restructure sentences, change the meaning, add new content, or alter the tone. The output must be nearly identical to the input in length and structure. CRITICAL: Do NOT change, remove, or paraphrase any proper nouns — especially people names, building names, unit numbers, or agent names. If the message contains a name like Ahmed or a building like Marina Gate, keep it exactly as is. Return only the message text with no commentary, labels, or explanation.\n\nMessage:\n\n' + message;
 
     const res = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey,
@@ -407,12 +422,23 @@ const UnitCollector = () => {
     }
   };
 
-  const substituteTemplate = (template: string, row: ParsedRow, agentName: string): string =>
-    template
-      .replace(/\{\{owner_name\}\}/g,       row.owner_name    || '')
-      .replace(/\{\{building_name\}\}/g,    row.building_name || '')
-      .replace(/\{\{unit_number\}\}/g,      row.unit_number   || '')
-      .replace(/\{\{agent_first_name\}\}/g, agentName);
+  // Replace all known placeholder formats (raw {{}} and friendly [] and accidental ())
+  // Case-insensitive so agents can type [owner name] or [Owner Name] freely.
+  const subAll = (text: string, patterns: string[], value: string): string => {
+    let t = text;
+    for (const p of patterns) {
+      t = t.replace(new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), value);
+    }
+    return t;
+  };
+  const substituteTemplate = (template: string, row: ParsedRow, agentName: string): string => {
+    let t = template;
+    t = subAll(t, ['{{owner_name}}', '[Owner Name]', '(Owner Name)', '[owner name]', '(owner name)', '{{owner name}}'], row.owner_name || '');
+    t = subAll(t, ['{{building_name}}', '[Building Name]', '(Building Name)', '[building name]', '(building name)', '{{building name}}'], row.building_name || '');
+    t = subAll(t, ['{{unit_number}}', '[Unit Number]', '(Unit Number)', '[unit number]', '(unit number)', '[Unit No]', '(Unit No)', '{{unit number}}'], row.unit_number || '');
+    t = subAll(t, ['{{agent_first_name}}', '[Agent Name]', '(Agent Name)', '[agent name]', '(agent name)', '[Agent First Name]', '{{agent first name}}'], agentName || '');
+    return t;
+  };
 
   const handleUpload = async () => {
     if (!batchName || !file || !selectedTemplate) { toast.error('Please fill all required fields'); return; }
