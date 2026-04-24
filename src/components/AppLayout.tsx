@@ -18,10 +18,10 @@ import {
   BarChart3,
   FileBarChart2,
   Loader2,
-  Sparkles,
   DatabaseZap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { ElviLogo } from '@/pages/Elvi';
 
 const AppLayout = () => {
   const { profile, profileLoading, signOut } = useAuth();
@@ -37,7 +37,7 @@ const AppLayout = () => {
     { path: '/email-campaigns', label: 'Email Campaigns', icon: Mail, roles: ['super_admin'] },
     { path: '/analytics', label: 'Analytics', icon: BarChart3, roles: ['super_admin', 'admin'] },
     { path: '/market-reports', label: 'Market Reports', icon: FileBarChart2, roles: ['super_admin', 'admin', 'agent'] },
-    { path: '/elvi', label: 'Elvi AI', icon: Sparkles, roles: ['super_admin', 'admin', 'agent'] },
+    { path: '/elvi', label: 'Elvi AI', icon: null, roles: ['super_admin', 'admin', 'agent'] },
     { path: '/elvi-admin', label: 'Elvi Admin', icon: DatabaseZap, roles: ['super_admin', 'admin'] },
     { path: '/templates', label: 'Templates', icon: FileText, roles: ['super_admin', 'admin', 'agent'] },
     { path: '/settings', label: 'Settings', icon: Settings, roles: ['super_admin'] },
@@ -83,7 +83,10 @@ const AppLayout = () => {
                   : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
               )}
             >
-              <item.icon className="w-5 h-5" />
+              {item.icon === null
+                ? <ElviLogo size={20} />
+                : <item.icon className="w-5 h-5" />
+              }
               {item.label}
             </Link>
           ))}
