@@ -16,6 +16,8 @@ import UserManagement from "@/pages/UserManagement";
 import TeamManagement from "@/pages/TeamManagement";
 import MarketReports from "@/pages/MarketReports";
 import SalemEngine from "@/pages/SalemEngine";
+import Elvi from "@/pages/Elvi";
+import ElviAdmin from "@/pages/ElviAdmin";
 
 import EmailCampaigns from "@/pages/EmailCampaigns";
 import Analytics from "@/pages/Analytics";
@@ -67,6 +69,8 @@ const App = () => (
               <Route path="/email-campaigns" element={<ProtectedRoute roles={['super_admin']}><EmailCampaigns /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute roles={['super_admin', 'admin']}><Analytics /></ProtectedRoute>} />
               <Route path="/market-reports" element={<ProtectedRoute><MarketReports /></ProtectedRoute>} />
+              <Route path="/elvi" element={<ProtectedRoute><Elvi /></ProtectedRoute>} />
+              <Route path="/elvi-admin" element={<ProtectedRoute roles={['super_admin', 'admin']}><ElviAdmin /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute roles={['super_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="/user-management" element={<ProtectedRoute roles={['super_admin']}><UserManagement /></ProtectedRoute>} />
               <Route path="/team-management" element={<ProtectedRoute roles={['super_admin']}><TeamManagement /></ProtectedRoute>} />

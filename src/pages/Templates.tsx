@@ -168,7 +168,7 @@ const Templates = () => {
             </div>
             <div>
               <label className="text-sm font-medium">Message Body</label>
-              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi [Owner Name], I am [Agent Name] from EVA..." rows={6} className="mt-1" />
+              <Textarea value={templateBody} onChange={(e) => setTemplateBody(e.target.value)} placeholder="Hi [Owner Name], I'm [Agent Name] from EVA..." rows={6} className="mt-1" />
               <div className="flex items-center justify-between mt-1">
                 <span
                   className={`text-xs font-medium ${
@@ -183,7 +183,7 @@ const Templates = () => {
                 </span>
                 {templateBody.length > 255 && (
                   <span className="text-xs text-red-500 font-medium">
-                    Over 255-char limit - message will be truncated on send
+                    ⚠️ Over 255-char limit — message will be truncated on send
                   </span>
                 )}
               </div>
