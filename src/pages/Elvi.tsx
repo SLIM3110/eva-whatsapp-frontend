@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -13,6 +14,7 @@ import { toast } from 'sonner';
 import {
   Send, Plus, User, FileText, Loader2,
   Upload, X, ChevronDown, PanelLeftClose, PanelLeft,
+  Home, DatabaseZap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -72,6 +74,18 @@ function groupSessionsByDate(sessions: Session[]) {
   return groups.filter(g => g.sessions.length > 0);
 }
 
+// ── Simple markdown renderer (bold + newlines) ────────────────────────────────
+function renderMarkdown(text: string): React.ReactNode {
+  // Split on **bold** spans
+  const parts = text.split(/(\*\*[^*\n]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
 // ── Source chip ───────────────────────────────────────────────────────────────
 const SourceChip = ({ source }: { source: Source }) => {
   const label = source.doc_name || DOC_TYPE_LABELS[source.doc_type] || 'Document';
@@ -93,9 +107,9 @@ const MessageBubble = ({ msg }: { msg: Message }) => {
   return (
     <div className={cn('flex gap-3 group', isUser ? 'justify-end' : 'justify-start')}>
       {!isUser && (
-        <div className="shrink-0 mt-1"><ElviLogo size={30}/></div>
+        <div className="shrink-0 mt-1"><ElviLogo size={32}/></div>
       )}
-      <div className={cn('flex flex-col gap-1.5 max-w-[78%]', isUser && 'items-end')}>
+      <div className={cn('flex flex-col gap-2 max-w-[80%]', isUser && 'items-end')}>
         <div className={cn(
           'rounded-2xl px-4 py-3 text-sm leading-relaxed',
           isUser
@@ -110,7 +124,7 @@ const MessageBubble = ({ msg }: { msg: Message }) => {
               ))}
             </div>
           ) : (
-            <p className="whitespace-pre-wrap">{msg.content}</p>
+            <p className="whitespace-pre-wrap">{renderMarkdown(msg.content)}</p>
           )}
         </div>
         {!isUser && msg.sources && msg.sources.length > 0 && (
@@ -145,6 +159,7 @@ const SUGGESTIONS = [
 // ═════════════════════════════════════════════════════════════════════════════
 const Elvi = () => {
   const { user, profile } = useAuth();
+  const navigate = useNavigate();
   const isAdmin = profile?.role === 'super_admin' || profile?.role === 'admin';
 
   // Core state
@@ -292,8 +307,8 @@ const Elvi = () => {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
 
-    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: trimmed };
-    const typingMsg: Message = { id: 'typing', role: 'assistant', content: '', isTyping: true };
+    const userMsg: Message    = { id: crypto.randomUUID(), role: 'user', content: trimmed };
+    const typingMsg: Message  = { id: 'typing', role: 'assistant', content: '', isTyping: true };
     setMessages(prev => [...prev, userMsg, typingMsg]);
     setInput('');
     setLoading(true);
@@ -302,27 +317,84 @@ const Elvi = () => {
       .filter(m => m.id !== 'welcome' && !m.isTyping)
       .map(m => ({ role: m.role, content: m.content }));
 
+    // Stable ID for the assistant bubble we'll populate incrementally
+    const assistantId = crypto.randomUUID();
+    let streamStarted = false;
+
     try {
       const res = await fetch(`${BACKEND_URL}/api/elvi/query`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
         body: JSON.stringify({
-          agentId:    user?.id,
+          agentId:     user?.id,
           sessionId,
-          message:    trimmed,
+          message:     trimmed,
           history,
-          developerId:  selDev     === 'all' ? null : selDev,
-          projectId:    selProject  === 'all' ? null : selProject,
-          buildingId:   selBuilding === 'all' ? null : selBuilding,
+          developerId:  selDev      === 'all' ? null : selDev,
+          projectId:    selProject   === 'all' ? null : selProject,
+          buildingId:   selBuilding  === 'all' ? null : selBuilding,
+          stream:       true,
         }),
       });
+
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data = await res.json();
-      setMessages(prev => [
-        ...prev.filter(m => m.id !== 'typing'),
-        { id: crypto.randomUUID(), role: 'assistant', content: data.reply, sources: data.sources || [] },
-      ]);
-      loadSessions(); // refresh sidebar
+      if (!res.body) throw new Error('No response body');
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      const ensureAssistantBubble = () => {
+        if (!streamStarted) {
+          streamStarted = true;
+          setMessages(prev => [
+            ...prev.filter(m => m.id !== 'typing'),
+            { id: assistantId, role: 'assistant' as const, content: '', sources: [] },
+          ]);
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          let evt: any;
+          try { evt = JSON.parse(raw); } catch { continue; }
+
+          if (evt.type === 'chunk') {
+            ensureAssistantBubble();
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId
+                ? { ...m, content: m.content + (evt.text as string) }
+                : m
+            ));
+          } else if (evt.type === 'end') {
+            // Attach sources and refresh history sidebar
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId
+                ? { ...m, sources: evt.sources ?? [] }
+                : m
+            ));
+            loadSessions();
+          } else if (evt.type === 'error') {
+            throw new Error(evt.error as string);
+          }
+        }
+      }
+
+      // Edge case: stream ended with no chunks (empty response)
+      if (!streamStarted) {
+        setMessages(prev => prev.filter(m => m.id !== 'typing'));
+      }
     } catch {
       setMessages(prev => prev.filter(m => m.id !== 'typing'));
       toast.error('Elvi couldn\'t respond — please try again');
@@ -392,18 +464,18 @@ const Elvi = () => {
 
   // ═════════════════════════════════════════════════════════════════════════
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-0 rounded-xl overflow-hidden border shadow-sm bg-card">
+    <div className="flex h-screen w-screen overflow-hidden bg-background">
 
       {/* ── Left sidebar — session history ─────────────────────────────── */}
       <div className={cn(
         'flex flex-col border-r bg-sidebar transition-all duration-300 shrink-0',
         sidebarOpen ? 'w-64' : 'w-0 overflow-hidden'
       )}>
-        {/* Sidebar header */}
-        <div className="flex items-center gap-2.5 px-4 py-4 border-b border-sidebar-border">
-          <ElviLogo size={28}/>
+        {/* Sidebar header — Elvi brand */}
+        <div className="flex items-center gap-3 px-4 py-5 border-b border-sidebar-border">
+          <ElviLogo size={32}/>
           <div className="min-w-0">
-            <p className="font-semibold text-sidebar-foreground text-sm leading-tight">Elvi</p>
+            <p className="font-bold text-sidebar-foreground text-base leading-tight tracking-tight">Elvi</p>
             <p className="text-xs text-sidebar-foreground/50">EVA Real Estate AI</p>
           </div>
         </div>
@@ -466,14 +538,23 @@ const Elvi = () => {
           </div>
         </ScrollArea>
 
-        {/* Admin link */}
-        {isAdmin && (
-          <div className="px-3 py-3 border-t border-sidebar-border">
-            <a href="/elvi-admin" className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors">
-              <FileText className="w-3.5 h-3.5"/> Manage Knowledge Base
-            </a>
-          </div>
-        )}
+        {/* Footer links — back to app + admin */}
+        <div className="px-3 py-3 border-t border-sidebar-border space-y-0.5">
+          {isAdmin && (
+            <button
+              onClick={() => navigate('/elvi-admin')}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors"
+            >
+              <DatabaseZap className="w-3.5 h-3.5"/> Manage Knowledge Base
+            </button>
+          )}
+          <button
+            onClick={() => navigate('/')}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors"
+          >
+            <Home className="w-3.5 h-3.5"/> Back to Dashboard
+          </button>
+        </div>
       </div>
 
       {/* ── Main chat area ──────────────────────────────────────────────── */}
@@ -568,25 +649,37 @@ const Elvi = () => {
           </div>
         )}
 
-        {/* Messages */}
-        <ScrollArea className="flex-1 px-6 py-6">
-          <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map(msg => <MessageBubble key={msg.id} msg={msg}/>)}
-
-            {/* Suggestion chips — only on fresh chat */}
-            {messages.length <= 1 && (
-              <div className="grid grid-cols-2 gap-2 mt-4">
-                {SUGGESTIONS.map((s, i) => (
-                  <button key={i} onClick={() => sendMessage(s)}
-                    className="text-left text-xs px-3 py-2.5 rounded-xl border border-border bg-muted/40 hover:bg-muted hover:border-primary/30 transition-colors text-muted-foreground hover:text-foreground">
-                    {s}
-                  </button>
-                ))}
+        {/* Messages / Welcome state */}
+        {messages.length <= 1 ? (
+          /* ── Hero welcome — shown until first user message ── */
+          <div className="flex-1 flex flex-col items-center justify-center px-6 pb-8 gap-8">
+            <div className="flex flex-col items-center gap-4 text-center">
+              <ElviLogo size={72}/>
+              <div>
+                <h1 className="text-3xl font-bold tracking-tight text-foreground">Ask Elvi</h1>
+                <p className="text-muted-foreground mt-1.5 text-base">
+                  Your EVA real estate AI — projects, pricing, regulations, market data
+                </p>
               </div>
-            )}
-            <div ref={scrollRef}/>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5 w-full max-w-xl">
+              {SUGGESTIONS.map((s, i) => (
+                <button key={i} onClick={() => sendMessage(s)}
+                  className="text-left text-sm px-4 py-3 rounded-xl border border-border bg-card hover:bg-muted hover:border-primary/30 transition-colors text-muted-foreground hover:text-foreground leading-snug shadow-sm">
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
-        </ScrollArea>
+        ) : (
+          /* ── Active chat ── */
+          <ScrollArea className="flex-1 px-6 py-6">
+            <div className="max-w-3xl mx-auto space-y-6">
+              {messages.filter(m => m.id !== 'welcome').map(msg => <MessageBubble key={msg.id} msg={msg}/>)}
+              <div ref={scrollRef}/>
+            </div>
+          </ScrollArea>
+        )}
 
         {/* Input area */}
         <div className="px-4 py-4 border-t bg-card/80 backdrop-blur-sm shrink-0">

@@ -60,16 +60,18 @@ const App = () => (
             <Route path="/signup" element={<AuthRoute><Signup /></AuthRoute>} />
             <Route path="/activate" element={<Activate />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+
+            {/* Elvi gets its own full-screen layout — no AppLayout chrome */}
+            <Route path="/elvi" element={<ProtectedRoute><Elvi /></ProtectedRoute>} />
+
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/unit-collector" element={<UnitCollector />} />
               <Route path="/templates" element={<Templates />} />
               <Route path="/eva-engine" element={<ProtectedRoute roles={['super_admin']}><SalemEngine /></ProtectedRoute>} />
-              
               <Route path="/email-campaigns" element={<ProtectedRoute roles={['super_admin']}><EmailCampaigns /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute roles={['super_admin', 'admin']}><Analytics /></ProtectedRoute>} />
               <Route path="/market-reports" element={<ProtectedRoute><MarketReports /></ProtectedRoute>} />
-              <Route path="/elvi" element={<ProtectedRoute><Elvi /></ProtectedRoute>} />
               <Route path="/elvi-admin" element={<ProtectedRoute roles={['super_admin', 'admin']}><ElviAdmin /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute roles={['super_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="/user-management" element={<ProtectedRoute roles={['super_admin']}><UserManagement /></ProtectedRoute>} />
