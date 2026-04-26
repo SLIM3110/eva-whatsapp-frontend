@@ -34,6 +34,7 @@ const MarketReports = () => {
 
   // UI state
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<string>('');
   const [result, setResult] = useState<{ report_url: string; expires_at: string } | null>(null);
 
   const addCommunity = () => {
@@ -66,6 +67,7 @@ const MarketReports = () => {
 
     setLoading(true);
     setResult(null);
+    setProgress('Submitting…');
 
     try {
       const form = new FormData();
@@ -87,21 +89,62 @@ const MarketReports = () => {
       if (agentInstruction) form.append('agent_instruction', agentInstruction);
       if (imageFile && personalisationPrompt) form.append('personalisation_prompt', personalisationPrompt);
 
+      // 1. Submit — get jobId immediately
       const res = await fetch(`${API_BASE}/api/market-reports/generate`, {
         method: 'POST',
         body: form,
       });
-
       const json = await res.json();
-
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || json.message || 'Report generation failed');
+      if (!res.ok || !json.success || !json.jobId) {
+        throw new Error(json.error || json.message || 'Failed to submit report');
       }
 
-      setResult({ report_url: json.report_url, expires_at: json.expires_at });
-      toast.success('Report generated successfully!');
+      const jobId = json.jobId;
+      setProgress('Queued…');
+
+      // 2. Poll status every 4s until done, failed, or 10 min timeout
+      const startTime = Date.now();
+      const TIMEOUT_MS = 10 * 60 * 1000;
+      const POLL_INTERVAL_MS = 4000;
+
+      while (true) {
+        if (Date.now() - startTime > TIMEOUT_MS) {
+          throw new Error('Report generation timed out after 10 minutes. Please try again.');
+        }
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+        const statusRes = await fetch(
+          `${API_BASE}/api/market-reports/status/${jobId}?agent_id=${encodeURIComponent(user!.id)}`,
+        );
+        if (!statusRes.ok) {
+          // Transient network/server blip — keep polling unless it's been failing repeatedly
+          continue;
+        }
+        const statusJson = await statusRes.json();
+
+        if (statusJson.status === 'completed' && statusJson.report_url) {
+          setResult({ report_url: statusJson.report_url, expires_at: statusJson.expires_at });
+          setProgress('');
+          toast.success('Report generated successfully!');
+          break;
+        }
+        if (statusJson.status === 'failed') {
+          throw new Error(statusJson.error || 'Report generation failed');
+        }
+        if (statusJson.status === 'active') {
+          setProgress('Generating your report…');
+        } else if (statusJson.status === 'waiting') {
+          if (typeof statusJson.position === 'number' && statusJson.position > 0) {
+            const minsEstimate = Math.ceil((statusJson.position + 1) * 1.5);
+            setProgress(`You're #${statusJson.position + 1} in queue — about ${minsEstimate} min`);
+          } else {
+            setProgress('Next up — starting soon…');
+          }
+        }
+      }
     } catch (err: any) {
       toast.error(err.message || 'Something went wrong');
+      setProgress('');
     } finally {
       setLoading(false);
     }
@@ -117,6 +160,7 @@ const MarketReports = () => {
     setAgentInstruction('');
     setPersonalisationPrompt('');
     setResult(null);
+    setProgress('');
   };
 
   return (
@@ -360,6 +404,10 @@ const MarketReports = () => {
           </Button>
         )}
       </div>
+
+      {loading && progress && (
+        <p className="text-xs text-gray-500 italic -mt-3">{progress}</p>
+      )}
 
       {/* Result */}
       {result && (
