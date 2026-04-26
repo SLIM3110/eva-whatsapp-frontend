@@ -7,7 +7,6 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import AppLayout from "@/components/AppLayout";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
-import Activate from "@/pages/Activate";
 import Dashboard from "@/pages/Dashboard";
 import UnitCollector from "@/pages/UnitCollector";
 import Templates from "@/pages/Templates";
@@ -18,7 +17,6 @@ import MarketReports from "@/pages/MarketReports";
 import SalemEngine from "@/pages/SalemEngine";
 import Elvi from "@/pages/Elvi";
 import ElviAdmin from "@/pages/ElviAdmin";
-
 import EmailCampaigns from "@/pages/EmailCampaigns";
 import Analytics from "@/pages/Analytics";
 import NotFound from "@/pages/NotFound";
@@ -32,18 +30,16 @@ const ProtectedRoute = ({ children, roles }: { children: React.ReactNode; roles?
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
   if (!session) return <Navigate to="/login" replace />;
-  if (profile && !profile.is_active) return <Navigate to="/activate" replace />;
   if (roles && profile && !roles.includes(profile.role)) return <Navigate to="/" replace />;
 
   return <>{children}</>;
 };
 
 const AuthRoute = ({ children }: { children: React.ReactNode }) => {
-  const { session, profile, loading } = useAuth();
+  const { session, loading } = useAuth();
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>;
-  if (session && profile?.is_active) return <Navigate to="/" replace />;
-  if (session && profile && !profile.is_active) return <Navigate to="/activate" replace />;
+  if (session) return <Navigate to="/" replace />;
 
   return <>{children}</>;
 };
@@ -58,7 +54,6 @@ const App = () => (
           <Routes>
             <Route path="/login" element={<AuthRoute><Login /></AuthRoute>} />
             <Route path="/signup" element={<AuthRoute><Signup /></AuthRoute>} />
-            <Route path="/activate" element={<Activate />} />
             <Route path="/reset-password" element={<ResetPassword />} />
 
             {/* Elvi gets its own full-screen layout — no AppLayout chrome */}
