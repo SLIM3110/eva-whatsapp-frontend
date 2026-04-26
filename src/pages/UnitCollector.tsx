@@ -347,7 +347,7 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [sendPoll, setSendPoll]             = useState(true);
+  const [sendPoll, setSendPoll]             = useState(false);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -525,6 +525,7 @@ const UnitCollector = () => {
         number_2:          '',
         assigned_agent:    user!.id,
         generated_message: finalMsgs[i],
+        send_poll:         sendPoll,
       }));
 
       setUploadProgress('Saving contacts...');
@@ -538,7 +539,7 @@ const UnitCollector = () => {
       setFileMappingPreview(false);
       setParsedRows(null);
       setUploadProgress('');
-      setSendPoll(true);
+      setSendPoll(false);
       fetchData();
     } catch (err: any) {
       toast.error(err.message || 'Upload failed');
@@ -868,11 +869,24 @@ const UnitCollector = () => {
               const tmpl = templates.find(t => t.id === selectedTemplate);
               if (!tmpl) return null;
               const len = (tmpl.body || '').length;
-              return (
-                <p className={`text-xs mt-1 font-medium ${len > 255 ? 'text-red-500' : len > 200 ? 'text-amber-500' : 'text-green-600'}`}>
-                  {len} characters{len > 255 ? ' — ⚠️ over 255-char limit; message will be truncated' : len > 200 ? ' — approaching 255-char limit' : ' — within limit ✓'}
-                </p>
-              );
+              if (!sendPoll) {
+                return <p className="text-xs mt-1 font-medium text-muted-foreground">{len} characters</p>;
+              }
+              if (len > 255) {
+                return (
+                  <p className="text-xs mt-1 font-medium text-red-500">
+                    {len} characters — ⚠️ Reply-button messages over 255 characters won't send. Either shorten the template or turn off the reply-buttons toggle below.
+                  </p>
+                );
+              }
+              if (len > 200) {
+                return (
+                  <p className="text-xs mt-1 font-medium text-amber-500">
+                    {len} characters — approaching the 255-character reply-button limit. Personalised messages may exceed it and fail to send.
+                  </p>
+                );
+              }
+              return <p className="text-xs mt-1 font-medium text-green-600">{len} characters — within reply-button limit ✓</p>;
             })()}
           </div>
 
@@ -891,8 +905,9 @@ const UnitCollector = () => {
               <p className="text-xs text-muted-foreground mt-0.5">
                 Recipients receive tap-to-reply buttons:
                 <span className="font-medium"> 🏠 Rent it out · 💰 Sell it · 📊 Send me market data · ❌ Remove me</span>.
-                Responses are routed automatically — opted-out numbers are suppressed forever,
-                rent/sell leads get a personalised follow-up, and market data requests trigger a report.
+                When off, the message goes out as plain text. Either way, replies are routed automatically:
+                opt-outs are suppressed forever, rent/sell leads get a personalised follow-up, and market-data
+                requests are flagged on the dashboard so you can build the report in the Intelligence Hub.
               </p>
             </div>
           </div>
