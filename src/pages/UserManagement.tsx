@@ -12,19 +12,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { toUAETime } from '@/lib/uaeTime';
-import { Loader2, UserPlus, Copy, Eye, EyeOff, Server, Trash2 } from 'lucide-react';
+import { Loader2, Eye, EyeOff, Server, Trash2 } from 'lucide-react';
 
 const UserManagement = () => {
   const { user, profile } = useAuth();
   const isSuperAdmin = profile?.role === 'super_admin';
   const [users, setUsers] = useState<any[]>([]);
-  const [codes, setCodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
 
   // Assign Instance modal
-  const [instanceTarget, setInstanceTarget] = useState<any>(null); // the agent row
+  const [instanceTarget, setInstanceTarget] = useState<any>(null);
   const [instanceId, setInstanceId] = useState('');
   const [instanceToken, setInstanceToken] = useState('');
   const [instanceUrl, setInstanceUrl] = useState('');
@@ -36,16 +33,11 @@ const UserManagement = () => {
   const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(async () => {
-    const [usersRes, codesRes] = await Promise.all([
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-      supabase.from('activation_codes').select('*').order('created_at', { ascending: false }),
-    ]);
-    const profileMap = Object.fromEntries((usersRes.data || []).map(p => [p.id, p]));
-    setUsers(usersRes.data || []);
-    setCodes((codesRes.data || []).map(c => ({
-      ...c,
-      used_by_profile: c.used_by ? profileMap[c.used_by] || null : null,
-    })));
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_at', { ascending: false });
+    setUsers(data || []);
     setLoading(false);
   }, []);
 
@@ -66,50 +58,6 @@ const UserManagement = () => {
     const { error } = await supabase.from('profiles').update({ is_active: !currentActive }).eq('id', userId);
     if (error) toast.error('Failed to update');
     else { toast.success(currentActive ? 'User deactivated' : 'User activated'); fetchData(); }
-  };
-
-  const generateCode = async () => {
-    setGenerating(true);
-    const tryInsert = async (): Promise<string | null> => {
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const payload = { code, is_used: false, created_by: user!.id };
-      console.log('[generateCode] Inserting activation code:', payload);
-      const { error } = await supabase.from('activation_codes').insert(payload);
-      if (error) {
-        console.error('[generateCode] Insert error:', error);
-        if (error.code === '23505') {
-          // Collision — retry once with a new code
-          const code2 = Math.floor(100000 + Math.random() * 900000).toString();
-          const payload2 = { code: code2, is_used: false, created_by: user!.id };
-          console.log('[generateCode] Collision, retrying with:', payload2);
-          const { error: error2 } = await supabase.from('activation_codes').insert(payload2);
-          if (error2) {
-            console.error('[generateCode] Retry insert error:', error2);
-            return null;
-          }
-          return code2;
-        }
-        return null;
-      }
-      return code;
-    };
-
-    const result = await tryInsert();
-    if (result) {
-      setGeneratedCode(result);
-      console.log('[generateCode] Code saved successfully:', result);
-    } else {
-      toast.error('Failed to generate code');
-    }
-    setGenerating(false);
-    fetchData();
-  };
-
-  const copyCode = () => {
-    if (generatedCode) {
-      navigator.clipboard.writeText(generatedCode);
-      toast.success('Code copied to clipboard');
-    }
   };
 
   const openAssignInstance = (u: any) => {
@@ -133,7 +81,7 @@ const UserManagement = () => {
       .eq('id', instanceTarget.id);
 
     if (error) {
-      toast.error(`Failed to save: ${error.message}`);
+      toast.error('Failed to save: ' + error.message);
     } else {
       toast.success('Instance assigned — agent can now connect their WhatsApp');
       setInstanceTarget(null);
@@ -146,32 +94,26 @@ const UserManagement = () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      // 1. Cancel all pending contacts for this agent
       await supabase
         .from('owner_contacts')
         .update({ message_status: 'cancelled' })
         .eq('assigned_agent', deleteTarget.id)
         .eq('message_status', 'pending');
 
-      // 2. Delete the profile row
       const { error: profileError } = await supabase
         .from('profiles')
         .delete()
         .eq('id', deleteTarget.id);
       if (profileError) throw new Error(profileError.message);
 
-      // 3. Remove from Supabase auth
       const { error: authError } = await supabase.auth.admin.deleteUser(deleteTarget.id);
       if (authError) throw new Error(authError.message);
 
-      // 4. Remove from UI immediately
       setUsers(prev => prev.filter(u => u.id !== deleteTarget.id));
       setDeleteTarget(null);
-
-      // 5. Success toast
       toast.success('Account deleted successfully');
     } catch (err: any) {
-      toast.error(`Failed to delete account: ${err.message}`);
+      toast.error('Failed to delete account: ' + err.message);
     }
     setDeleting(false);
   };
@@ -187,12 +129,8 @@ const UserManagement = () => {
   return (
     <div className="space-y-8">
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+        <CardHeader>
           <CardTitle>User Management</CardTitle>
-          <Button onClick={generateCode} disabled={generating}>
-            {generating ? <Loader2 className="animate-spin mr-2" /> : <UserPlus className="w-4 h-4 mr-2" />}
-            Generate Activation Code
-          </Button>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -252,45 +190,6 @@ const UserManagement = () => {
           </div>
         </CardContent>
       </Card>
-
-      {/* Activation Codes */}
-      <Card>
-        <CardHeader><CardTitle>Activation Codes</CardTitle></CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader><TableRow>
-              <TableHead>Code</TableHead><TableHead>Created At</TableHead><TableHead>Status</TableHead><TableHead>Used By</TableHead><TableHead>Used At</TableHead>
-            </TableRow></TableHeader>
-            <TableBody>
-              {codes.map(c => (
-                <TableRow key={c.id}>
-                  <TableCell className="font-mono font-bold">{c.code}</TableCell>
-                  <TableCell>{toUAETime(c.created_at)}</TableCell>
-                  <TableCell>
-                    <Badge className={c.is_used ? 'bg-green-600 text-white' : 'bg-muted text-muted-foreground'}>
-                      {c.is_used ? 'Used' : 'Unused'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{c.is_used && c.used_by_profile ? `${c.used_by_profile.first_name} ${c.used_by_profile.last_name}` : ''}</TableCell>
-                  <TableCell>{c.used_at ? toUAETime(c.used_at) : ''}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      {/* Generated Code Modal */}
-      <Dialog open={!!generatedCode} onOpenChange={() => setGeneratedCode(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Activation Code Generated</DialogTitle></DialogHeader>
-          <div className="text-center space-y-4">
-            <p className="text-4xl font-mono font-bold tracking-widest text-primary">{generatedCode}</p>
-            <p className="text-sm text-muted-foreground">Share this code with the user to activate their account</p>
-            <Button onClick={copyCode} className="w-full"><Copy className="w-4 h-4 mr-2" /> Copy Code</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Delete Account Confirmation Modal */}
       <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
