@@ -28,6 +28,7 @@ const MarketReports = () => {
   const [imageFile, setImageFile] = useState<File | null>(null);
 
   // Options
+  const [clientName, setClientName] = useState('');
   const [serviceCharge, setServiceCharge] = useState('');
   const [agentInstruction, setAgentInstruction] = useState('');
   const [personalisationPrompt, setPersonalisationPrompt] = useState('');
@@ -85,6 +86,7 @@ const MarketReports = () => {
         communities.filter(c => c.trim()).forEach(c => form.append('communities[]', c.trim()));
       }
 
+      if (clientName.trim()) form.append('client_name', clientName.trim());
       if (serviceCharge) form.append('service_charge_psf', serviceCharge);
       if (agentInstruction) form.append('agent_instruction', agentInstruction);
       if (imageFile && personalisationPrompt) form.append('personalisation_prompt', personalisationPrompt);
@@ -156,6 +158,7 @@ const MarketReports = () => {
     setImageFile(null);
     setCommunityName('');
     setCommunities(['', '']);
+    setClientName('');
     setServiceCharge('');
     setAgentInstruction('');
     setPersonalisationPrompt('');
@@ -333,6 +336,18 @@ const MarketReports = () => {
           <CardTitle className="text-sm font-semibold text-gray-700">Report Options</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Client Name <span className="text-gray-400">(optional — appears on the cover as "Prepared exclusively for…")</span>
+            </label>
+            <Input
+              type="text"
+              placeholder="e.g. Mr. Khaled Al Mansoori"
+              value={clientName}
+              onChange={e => setClientName(e.target.value)}
+            />
+          </div>
+
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Service Charge (AED/sqft/year) <span className="text-gray-400">(optional — for net yield)</span>
