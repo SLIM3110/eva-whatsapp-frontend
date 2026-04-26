@@ -47,8 +47,8 @@ const Signup = () => {
     if (error) {
       toast.error(error.message);
     } else {
-      toast.success('Account created! Please enter your activation code.');
-      navigate('/activate');
+      toast.success('Account created! Welcome to EVA.');
+      navigate('/');
     }
     setLoading(false);
   };
