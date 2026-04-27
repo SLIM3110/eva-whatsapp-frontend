@@ -30,6 +30,7 @@ const MarketReports = () => {
   // Options
   const [clientName, setClientName] = useState('');
   const [audience, setAudience] = useState<'neutral' | 'seller' | 'buyer'>('neutral');
+  const [includeListings, setIncludeListings] = useState(true);
   const [serviceCharge, setServiceCharge] = useState('');
   const [agentInstruction, setAgentInstruction] = useState('');
   const [personalisationPrompt, setPersonalisationPrompt] = useState('');
@@ -89,6 +90,7 @@ const MarketReports = () => {
 
       if (clientName.trim()) form.append('client_name', clientName.trim());
       form.append('audience', audience);
+      form.append('include_listings', String(includeListings));
       if (serviceCharge) form.append('service_charge_psf', serviceCharge);
       if (agentInstruction) form.append('agent_instruction', agentInstruction);
       if (imageFile && personalisationPrompt) form.append('personalisation_prompt', personalisationPrompt);
@@ -162,6 +164,7 @@ const MarketReports = () => {
     setCommunities(['', '']);
     setClientName('');
     setAudience('neutral');
+    setIncludeListings(true);
     setServiceCharge('');
     setAgentInstruction('');
     setPersonalisationPrompt('');
@@ -375,6 +378,35 @@ const MarketReports = () => {
             </div>
             <p className="text-xs text-gray-400 mt-1.5">
               Seller's briefings emphasise reasons to list now. Buyer's briefings emphasise entry-thesis signals. Neutral is balanced.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-2">
+              Listings Analysis <span className="text-gray-400">(asking prices vs completed sales)</span>
+            </label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={includeListings ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setIncludeListings(true)}
+                className={includeListings ? 'bg-emerald-700 hover:bg-emerald-800' : ''}
+              >
+                Include
+              </Button>
+              <Button
+                type="button"
+                variant={!includeListings ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setIncludeListings(false)}
+                className={!includeListings ? 'bg-emerald-700 hover:bg-emerald-800' : ''}
+              >
+                Sales Only
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              When included, the report adds a section comparing current asking prices against actual completed Title Deed / Oqood sales — overall and by bedroom — so sellers can see realistic pricing and buyers can judge negotiating room.
             </p>
           </div>
 
