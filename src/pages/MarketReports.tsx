@@ -29,6 +29,7 @@ const MarketReports = () => {
 
   // Options
   const [clientName, setClientName] = useState('');
+  const [audience, setAudience] = useState<'neutral' | 'seller' | 'buyer'>('neutral');
   const [serviceCharge, setServiceCharge] = useState('');
   const [agentInstruction, setAgentInstruction] = useState('');
   const [personalisationPrompt, setPersonalisationPrompt] = useState('');
@@ -87,6 +88,7 @@ const MarketReports = () => {
       }
 
       if (clientName.trim()) form.append('client_name', clientName.trim());
+      form.append('audience', audience);
       if (serviceCharge) form.append('service_charge_psf', serviceCharge);
       if (agentInstruction) form.append('agent_instruction', agentInstruction);
       if (imageFile && personalisationPrompt) form.append('personalisation_prompt', personalisationPrompt);
@@ -159,6 +161,7 @@ const MarketReports = () => {
     setCommunityName('');
     setCommunities(['', '']);
     setClientName('');
+    setAudience('neutral');
     setServiceCharge('');
     setAgentInstruction('');
     setPersonalisationPrompt('');
@@ -346,6 +349,33 @@ const MarketReports = () => {
               value={clientName}
               onChange={e => setClientName(e.target.value)}
             />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-2">
+              Report Audience <span className="text-gray-400">(determines the tone of the AI narrative)</span>
+            </label>
+            <div className="flex gap-2 flex-wrap">
+              {([
+                { v: 'neutral', label: 'Neutral / Both' },
+                { v: 'seller',  label: "Seller's Briefing" },
+                { v: 'buyer',   label: "Buyer's Briefing" },
+              ] as const).map(opt => (
+                <Button
+                  key={opt.v}
+                  type="button"
+                  variant={audience === opt.v ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setAudience(opt.v)}
+                  className={audience === opt.v ? 'bg-emerald-700 hover:bg-emerald-800' : ''}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              Seller's briefings emphasise reasons to list now. Buyer's briefings emphasise entry-thesis signals. Neutral is balanced.
+            </p>
           </div>
 
           <div>
