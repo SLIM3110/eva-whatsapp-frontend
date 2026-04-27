@@ -393,17 +393,17 @@ const MarketReports = () => {
 
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
-              Instructions for AI Narrative
+              Community Notes & AI Instructions
             </label>
             <Textarea
-              placeholder="e.g. Highlight the strong rental demand from tech professionals. Mention the new metro station opening nearby. Focus on villa performance over apartments."
+              placeholder="Use this to tell the AI what is specific about this community. e.g. 'Mudon Al Ranim is G+1 only, do not mention high-floor language. Phase 3 has end units backing onto the park which trade at a premium. The new Etihad Rail station at Cityland is 4 minutes drive.'"
               value={agentInstruction}
               onChange={e => setAgentInstruction(e.target.value)}
-              rows={3}
+              rows={4}
               className="text-sm"
             />
             <p className="text-xs text-gray-400 mt-1">
-              These instructions guide the AI-written executive summary and market outlook sections.
+              These notes are used two ways: woven into the AI-generated narrative throughout the report, and rendered verbatim as an "Agent Observations" callout in the Location section.
             </p>
           </div>
 
