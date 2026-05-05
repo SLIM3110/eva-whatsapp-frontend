@@ -472,7 +472,7 @@ const UnitCollector = () => {
 
   // Insert contacts in chunks so a single 200-row request can't time out and
   // leave us with an orphan batch (parent row written, contacts row dropped).
-  const CHUNK_SIZE = 50;
+  const CHUNK_SIZE = 100;
 
   const handleUpload = async () => {
     if (!batchName || !file || !selectedTemplate) { toast.error('Please fill all required fields'); return; }
