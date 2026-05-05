@@ -423,7 +423,13 @@ const UnitCollector = () => {
 
     // Hide archived (cancelled / orphan) batches. Falls back to the legacy filter
     // if is_archived is missing from any row.
-    setBatches(mapped.filter((b: any) => !b.is_archived && (b.pending_count > 0 || b.sent_count > 0)));
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    setBatches(mapped.filter((b: any) => {
+      if (b.is_archived) return false;
+      if (b.pending_count === 0 && b.sent_count === 0) return false;
+      if (b.pending_count === 0 && b.sent_count > 0 && b.completed_at && b.completed_at < sevenDaysAgo) return false;
+      return true;
+    }));
 
     const defaultTpl = templatesRes.data?.find((t: any) => t.is_default);
     if (defaultTpl) setSelectedTemplate(defaultTpl.id);

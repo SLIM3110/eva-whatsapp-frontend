@@ -207,7 +207,12 @@ const OpsDashboard = () => {
         .order('upload_date', { ascending: false })
         .limit(20);
     }
-    const visible = (batchRes.data || []).filter((b: any) => !b.is_archived);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    const visible = (batchRes.data || []).filter((b: any) => {
+      if (b.is_archived) return false;
+      if (b.pending_count === 0 && b.sent_count > 0 && b.completed_at && b.completed_at < sevenDaysAgo) return false;
+      return true;
+    });
     const uploaderIds = Array.from(new Set(visible.map((b: any) => b.uploaded_by).filter(Boolean)));
     let uploaderMap: Record<string, string> = {};
     if (uploaderIds.length) {
