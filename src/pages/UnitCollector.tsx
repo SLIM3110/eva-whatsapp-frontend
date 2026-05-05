@@ -421,8 +421,9 @@ const UnitCollector = () => {
       cancelledCount: cancelledCounts[b.id] || 0,
     }));
 
-    // Hide fully-cancelled batches (pending=0, sent=0)
-    setBatches(mapped.filter((b: any) => b.pending_count > 0 || b.sent_count > 0));
+    // Hide archived (cancelled / orphan) batches. Falls back to the legacy filter
+    // if is_archived is missing from any row.
+    setBatches(mapped.filter((b: any) => !b.is_archived && (b.pending_count > 0 || b.sent_count > 0)));
 
     const defaultTpl = templatesRes.data?.find((t: any) => t.is_default);
     if (defaultTpl) setSelectedTemplate(defaultTpl.id);
@@ -463,12 +464,21 @@ const UnitCollector = () => {
 
   // ── Upload ────────────────────────────────────────────────────
 
+  // Insert contacts in chunks so a single 200-row request can't time out and
+  // leave us with an orphan batch (parent row written, contacts row dropped).
+  const CHUNK_SIZE = 50;
+
   const handleUpload = async () => {
     if (!batchName || !file || !selectedTemplate) { toast.error('Please fill all required fields'); return; }
     if (parseError) { toast.error('Fix file issues before uploading'); return; }
 
     setUploading(true);
-    setUploadProgress('');
+    setUploadProgress('Validating…');
+
+    // Rollback targets — populated as we make progress so we can clean up on any failure.
+    let createdBatchId: string | null = null;
+    const insertedContactIds: string[] = [];
+
     try {
       let rows = parsedRows;
       if (!rows) {
@@ -484,6 +494,30 @@ const UnitCollector = () => {
       if (dupeCount > 0) toast.info(`Removed ${dupeCount} duplicate phone number${dupeCount > 1 ? 's' : ''} — each number will only receive one message.`);
       rows = deduped;
 
+      // Pre-flight: agent must be ready to send. Otherwise the rows would just
+      // sit pending forever and confuse the dashboard.
+      const { data: me, error: meErr } = await supabase
+        .from('profiles')
+        .select('green_api_instance_id, whatsapp_session_status, sending_paused')
+        .eq('id', user!.id)
+        .single();
+      if (meErr) throw new Error('Could not verify your account: ' + meErr.message);
+      if (!me?.green_api_instance_id) {
+        toast.error('Your WhatsApp instance is not provisioned yet — ask an admin to add a Green API instance, then scan the QR code.');
+        setUploading(false);
+        return;
+      }
+      if (me.whatsapp_session_status !== 'connected') {
+        toast.error('Your WhatsApp is not connected. Open Settings and re-scan the QR before uploading.');
+        setUploading(false);
+        return;
+      }
+      if (me.sending_paused) {
+        toast.error('Sending is paused on your account. Resume it before uploading new contacts.');
+        setUploading(false);
+        return;
+      }
+
       const template = templates.find(t => t.id === selectedTemplate);
       if (!template) { toast.error('Template not found'); setUploading(false); return; }
 
@@ -491,7 +525,7 @@ const UnitCollector = () => {
       const { data: settings } = await supabase.from('api_settings').select('gemini_api_key').eq('id', 1).single();
       const geminiKey = settings?.gemini_api_key || '';
 
-      // Create batch record
+      // Create batch record (rollback target #1)
       const { data: batch, error: batchError } = await supabase.from('batches').insert({
         batch_name:      batchName,
         uploaded_by:     user!.id,
@@ -499,7 +533,8 @@ const UnitCollector = () => {
         pending_count:   rows.length,
         send_poll:       sendPoll,
       }).select().single();
-      if (batchError) throw batchError;
+      if (batchError) throw new Error(`Batch creation failed: ${batchError.message}`);
+      createdBatchId = batch.id;
 
       const agentName = profile?.first_name || '';
       const baseMsgs = rows.map(r => substituteTemplate(template.body, r, agentName));
@@ -516,7 +551,7 @@ const UnitCollector = () => {
         finalMsgs = baseMsgs;
       }
 
-      const contactInserts: any[] = rows.map((r, i) => ({
+      const allRows: any[] = rows.map((r, i) => ({
         uploaded_batch_id: batch.id,
         owner_name:        r.owner_name,
         building_name:     r.building_name || batchName,
@@ -528,11 +563,21 @@ const UnitCollector = () => {
         send_poll:         sendPoll,
       }));
 
-      setUploadProgress('Saving contacts...');
-      const { error: insertError } = await supabase.from('owner_contacts').insert(contactInserts);
-      if (insertError) throw insertError;
+      // Chunked insert. If any chunk fails, we throw and the catch block rolls back.
+      for (let i = 0; i < allRows.length; i += CHUNK_SIZE) {
+        const chunk = allRows.slice(i, i + CHUNK_SIZE);
+        setUploadProgress(`Saving contacts (${Math.min(i + chunk.length, allRows.length)} of ${allRows.length})…`);
+        const { data: inserted, error: chunkErr } = await supabase
+          .from('owner_contacts')
+          .insert(chunk)
+          .select('id');
+        if (chunkErr) {
+          throw new Error(`Contact insert failed at row ${i + 1}–${i + chunk.length}: ${chunkErr.message}`);
+        }
+        (inserted || []).forEach((row: any) => insertedContactIds.push(row.id));
+      }
 
-      toast.success(`${contactInserts.length} contacts added`);
+      toast.success(`${allRows.length} contacts queued for sending`);
       setBatchName('');
       setFile(null);
       setFileMapping(null);
@@ -542,7 +587,22 @@ const UnitCollector = () => {
       setSendPoll(false);
       fetchData();
     } catch (err: any) {
-      toast.error(err.message || 'Upload failed');
+      // Rollback any partial work so we never leave an orphan batch in the dashboard.
+      setUploadProgress('Upload failed — rolling back…');
+      try {
+        if (insertedContactIds.length > 0) {
+          await supabase.from('owner_contacts').delete().in('id', insertedContactIds);
+        }
+        if (createdBatchId) {
+          await supabase.from('batches').delete().eq('id', createdBatchId);
+        }
+      } catch (rbErr: any) {
+        toast.error(`Upload failed AND rollback failed. Tell an admin to remove batch ${createdBatchId ?? '?'}. Original: ${err.message}. Rollback: ${rbErr?.message || 'unknown'}`);
+        setUploading(false);
+        setUploadProgress('');
+        return;
+      }
+      toast.error(err.message || 'Upload failed — no batch was created.');
       setUploadProgress('');
     }
     setUploading(false);
@@ -576,7 +636,15 @@ const UnitCollector = () => {
         .eq('uploaded_batch_id', batchId)
         .eq('message_status', 'pending');
       if (error) throw error;
-      await supabase.from('batches').update({ pending_count: 0 }).eq('id', batchId);
+      // Mark the batch archived + record when. is_archived hides it from the
+      // dashboard; cancelled_at gives us an audit trail.
+      await supabase.from('batches')
+        .update({
+          pending_count: 0,
+          is_archived:   true,
+          cancelled_at:  new Date().toISOString(),
+        })
+        .eq('id', batchId);
       // Remove immediately from UI — do not call fetchData
       setBatches(prev => prev.filter(b => b.id !== batchId));
       setCancelBatchId(null);

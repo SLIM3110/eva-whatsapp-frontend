@@ -17,6 +17,7 @@ import {
   Mail,
   BarChart3,
   FileBarChart2,
+  Activity,
   Loader2,
   DatabaseZap,
 } from 'lucide-react';
@@ -36,6 +37,7 @@ const AppLayout = () => {
     { path: '/eva-engine', label: 'EVA Engine', icon: Bot, roles: ['super_admin'] },
     { path: '/email-campaigns', label: 'Email Campaigns', icon: Mail, roles: ['super_admin'] },
     { path: '/analytics', label: 'Analytics', icon: BarChart3, roles: ['super_admin', 'admin'] },
+    { path: '/ops', label: 'Operations', icon: Activity, roles: ['super_admin'] },
     { path: '/market-reports', label: 'Market Reports', icon: FileBarChart2, roles: ['super_admin', 'admin', 'agent'] },
     { path: '/elvi', label: 'Elvi AI', icon: null, roles: ['super_admin', 'admin', 'agent'] },
     { path: '/elvi-admin', label: 'Elvi Admin', icon: DatabaseZap, roles: ['super_admin', 'admin'] },

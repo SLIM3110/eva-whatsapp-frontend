@@ -19,6 +19,7 @@ import Elvi from "@/pages/Elvi";
 import ElviAdmin from "@/pages/ElviAdmin";
 import EmailCampaigns from "@/pages/EmailCampaigns";
 import Analytics from "@/pages/Analytics";
+import OpsDashboard from "@/pages/OpsDashboard";
 import NotFound from "@/pages/NotFound";
 import ResetPassword from "@/pages/ResetPassword";
 import { Loader2 } from "lucide-react";
@@ -66,6 +67,7 @@ const App = () => (
               <Route path="/eva-engine" element={<ProtectedRoute roles={['super_admin']}><SalemEngine /></ProtectedRoute>} />
               <Route path="/email-campaigns" element={<ProtectedRoute roles={['super_admin']}><EmailCampaigns /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute roles={['super_admin', 'admin']}><Analytics /></ProtectedRoute>} />
+              <Route path="/ops" element={<ProtectedRoute roles={['super_admin']}><OpsDashboard /></ProtectedRoute>} />
               <Route path="/market-reports" element={<ProtectedRoute><MarketReports /></ProtectedRoute>} />
               <Route path="/elvi-admin" element={<ProtectedRoute roles={['super_admin', 'admin']}><ElviAdmin /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute roles={['super_admin']}><SettingsPage /></ProtectedRoute>} />
