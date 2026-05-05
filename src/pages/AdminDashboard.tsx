@@ -99,7 +99,7 @@ const AdminDashboard = () => {
     })));
 
     setFailedMessages(failed.slice(0, 50));
-    setDisconnectedAgents(agentData.filter(a => a.whatsapp_session_status !== 'connected'));
+    setDisconnectedAgents(agentData.filter(a => a.whatsapp_session_status !== 'connected' && a.whatsapp_session_status !== 'starting'));
     setLoading(false);
   }, []);
 
@@ -225,6 +225,7 @@ const AdminDashboard = () => {
   };
 
   const isConnected = profile?.whatsapp_session_status === 'connected';
+  const isStarting = profile?.whatsapp_session_status === 'starting';
   const hasInstance = !!(profile?.green_api_instance_id);
 
   const generateCode = async () => {
@@ -486,6 +487,8 @@ const AdminDashboard = () => {
                       <div className="flex items-center gap-2">
                         {a.whatsapp_session_status === 'connected'
                           ? <><Wifi className="w-4 h-4 text-green-600" /><span className="text-green-600 text-sm">Connected</span></>
+                          : a.whatsapp_session_status === 'starting'
+                          ? <><Loader2 className="animate-spin w-4 h-4 text-blue-500" /><span className="text-blue-500 text-sm">Reconnecting</span></>
                           : <><WifiOff className="w-4 h-4 text-destructive" /><span className="text-destructive text-sm">Disconnected</span></>
                         }
                       </div>

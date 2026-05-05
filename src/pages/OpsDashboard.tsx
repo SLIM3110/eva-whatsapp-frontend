@@ -419,7 +419,7 @@ const OpsDashboard = () => {
                   <TableCell className="font-medium">{u.name}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{u.email}</TableCell>
                   <TableCell>
-                    <Badge variant={u.conn === 'connected' ? 'default' : 'secondary'}>
+                    <Badge variant={u.conn === 'connected' ? 'default' : u.conn === 'starting' ? 'outline' : 'secondary'} className={u.conn === 'starting' ? 'text-blue-500 border-blue-500' : ''}>
                       {u.conn}
                     </Badge>
                     {u.paused && <Badge variant="outline" className="ml-2">paused</Badge>}

@@ -44,6 +44,7 @@ const AgentDashboard = () => {
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isConnected = profile?.whatsapp_session_status === 'connected';
+  const isStarting = profile?.whatsapp_session_status === 'starting';
   const hasInstance = !!(profile?.green_api_instance_id);
 
   // ── Data fetch ────────────────────────────────────────────────
@@ -338,6 +339,14 @@ const AgentDashboard = () => {
               </p>
             </div>
 
+          ) : isStarting ? (
+            <>
+              <Badge className="bg-blue-500 text-white text-lg px-6 py-2">Reconnecting</Badge>
+              <p className="text-sm text-muted-foreground text-center">
+                Your WhatsApp is reconnecting in the background. Sending will begin at next business hours.
+              </p>
+              <Button variant="destructive" size="sm" onClick={disconnect}>Disconnect</Button>
+            </>
           ) : isConnected ? (
             <>
               <Badge className="bg-green-600 text-white text-lg px-6 py-2">Connected</Badge>
