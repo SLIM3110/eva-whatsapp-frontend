@@ -347,7 +347,7 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [sendPoll, setSendPoll]             = useState(false);
+  const [sendButtons, setSendButtons]             = useState(false);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -531,7 +531,8 @@ const UnitCollector = () => {
         uploaded_by:     user!.id,
         total_contacts:  rows.length,
         pending_count:   rows.length,
-        send_poll:       sendPoll,
+        send_poll:       false,
+        send_buttons:    sendButtons,
       }).select().single();
       if (batchError) throw new Error(`Batch creation failed: ${batchError.message}`);
       createdBatchId = batch.id;
@@ -560,7 +561,7 @@ const UnitCollector = () => {
         number_2:          '',
         assigned_agent:    user!.id,
         generated_message: finalMsgs[i],
-        send_poll:         sendPoll,
+        send_buttons:      sendButtons,
       }));
 
       // Chunked insert. If any chunk fails, we throw and the catch block rolls back.
@@ -584,7 +585,7 @@ const UnitCollector = () => {
       setFileMappingPreview(false);
       setParsedRows(null);
       setUploadProgress('');
-      setSendPoll(false);
+      setSendButtons(false);
       fetchData();
     } catch (err: any) {
       // Rollback any partial work so we never leave an orphan batch in the dashboard.
@@ -937,7 +938,7 @@ const UnitCollector = () => {
               const tmpl = templates.find(t => t.id === selectedTemplate);
               if (!tmpl) return null;
               const len = (tmpl.body || '').length;
-              if (!sendPoll) {
+              if (!sendButtons) {
                 return <p className="text-xs mt-1 font-medium text-muted-foreground">{len} characters</p>;
               }
               if (len > 255) {
@@ -961,21 +962,21 @@ const UnitCollector = () => {
           {/* Poll toggle */}
           <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
             <Switch
-              id="send-poll"
-              checked={sendPoll}
-              onCheckedChange={setSendPoll}
+              id="send-buttons"
+              checked={sendButtons}
+              onCheckedChange={setSendButtons}
               className="mt-0.5"
             />
             <div>
-              <label htmlFor="send-poll" className="text-sm font-medium cursor-pointer">
+              <label htmlFor="send-buttons" className="text-sm font-medium cursor-pointer">
                 Send reply buttons with outreach message
               </label>
               <p className="text-xs text-muted-foreground mt-0.5">
                 Recipients receive tap-to-reply buttons:
-                <span className="font-medium"> 🏠 Rent it out · 💰 Sell it · 📊 Send me market data · ❌ Remove me</span>.
+                <span className="font-medium"> 💰 Sell my property · 🏠 Rent it out · ❌ Not interested</span>.
                 When off, the message goes out as plain text. Either way, replies are routed automatically:
-                opt-outs are suppressed forever, rent/sell leads get a personalised follow-up, and market-data
-                requests are flagged on the dashboard so you can build the report in the Intelligence Hub.
+                opt-outs are suppressed forever, sell/rent taps update the lead status on the dashboard,
+                and free-text replies surface for the agent to handle personally.
               </p>
             </div>
           </div>
