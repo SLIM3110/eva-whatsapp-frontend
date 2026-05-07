@@ -347,7 +347,7 @@ const UnitCollector = () => {
   const [fileMappingPreview, setFileMappingPreview] = useState(false);
   const [templates, setTemplates]           = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [sendButtons, setSendButtons]             = useState(false);
+  const [sendButtons, setSendButtons]       = useState(false);
   const [agents, setAgents]                 = useState<any[]>([]);
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -537,7 +537,6 @@ const UnitCollector = () => {
         uploaded_by:     user!.id,
         total_contacts:  rows.length,
         pending_count:   rows.length,
-        send_poll:       false,
         send_buttons:    sendButtons,
       }).select().single();
       if (batchError) throw new Error(`Batch creation failed: ${batchError.message}`);
@@ -965,7 +964,7 @@ const UnitCollector = () => {
             })()}
           </div>
 
-          {/* Poll toggle */}
+          {/* Quick reply buttons toggle */}
           <div className="flex items-start gap-3 rounded-lg border p-3 bg-muted/30">
             <Switch
               id="send-buttons"
